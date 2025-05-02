@@ -130,7 +130,7 @@ furtherplus/
 If you use FURTHER+ in your research, please cite:
 
 ```
-@misc{dogaroglu2024furtherplus,
+@misc{dogaroglu2025furtherplus,
   author = {Dogaroglu, Ege Can},
   title = {FURTHER+: A Framework for Multi-Agent Social Learning},
   year = {2025},
