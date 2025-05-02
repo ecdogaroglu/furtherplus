@@ -1,0 +1,70 @@
+"""
+Command-line argument parsing for FURTHER+ experiments.
+"""
+
+import argparse
+from modules.agent import get_best_device
+
+
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="Train and evaluate FURTHER+ in social learning")
+    
+    # Environment parameters
+    parser.add_argument('--num-agents', type=int, default=2, help='Number of agents')
+    parser.add_argument('--signal-accuracy', type=float, default=0.75, help='Accuracy of private signals')
+    parser.add_argument('--network-type', type=str, default='complete', 
+                        choices=['complete', 'ring', 'star', 'random'], help='Network structure')
+    parser.add_argument('--network-density', type=float, default=0.5, 
+                        help='Density for random networks')
+    parser.add_argument('--total-steps', type=int, default=10000, help='Total number of steps')
+    
+    # Training parameters
+    parser.add_argument('--batch-size', type=int, default=64, help='Batch size')
+    parser.add_argument('--buffer-capacity', type=int, default=10000, help='Replay buffer capacity')
+    parser.add_argument('--learning-rate', type=float, default=1e-3, help='Learning rate')
+    parser.add_argument('--update-interval', type=int, default=1, help='Steps between updates')
+    
+    # Agent hyperparameters
+    parser.add_argument('--hidden-dim', type=int, default=64, help='Hidden layer dimension')
+    parser.add_argument('--belief-dim', type=int, default=64, help='Belief state dimension')
+    parser.add_argument('--latent-dim', type=int, default=16, help='Latent space dimension')
+    parser.add_argument('--discount-factor', type=float, default=0.0, 
+                        help='Discount factor (0 = average reward)')
+    parser.add_argument('--entropy-weight', type=float, default=0.01, help='Entropy bonus weight')
+    parser.add_argument('--kl-weight', type=float, default=0.01, help='KL weight for inference')
+    
+    # Experiment settings
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--device', type=str, default=get_best_device(), 
+                        help='Device to use (cuda, mps, or cpu)')
+    parser.add_argument('--output-dir', type=str, default='results', help='Output directory')
+    parser.add_argument('--exp-name', type=str, default='brandl_validation', 
+                        help='Experiment name')
+    parser.add_argument('--save-model', action='store_true', help='Save agent models')
+    parser.add_argument('--load-model', type=str, nargs='?', const='auto',
+                        help='Load model (if specified without path: load final model, with path: load from specified path)')
+    
+    # Network size comparison
+    parser.add_argument('--compare-sizes', action='store_true', 
+                        help='Compare different network sizes')
+    parser.add_argument('--network-sizes', type=str, default='2,4,6,10,20', 
+                        help='Comma-separated list of network sizes')
+    
+    # Training vs evaluation
+    parser.add_argument('--eval-only', action='store_true', 
+                        help='Only run evaluation, no training')
+    
+    # Visualization options
+    parser.add_argument('--plot-internal-states', action='store_true',
+                        help='Generate detailed visualizations of internal states (belief, latent, decision boundaries)')
+    parser.add_argument('--plot-type', type=str, default='both', choices=['belief', 'latent', 'both'],
+                        help='Type of internal state to plot (belief, latent, or both)')
+    
+    args = parser.parse_args()
+    
+    # Process network sizes
+    if hasattr(args, 'network_sizes'):
+        args.network_sizes_list = [int(size) for size in args.network_sizes.split(',')]
+    
+    return args
