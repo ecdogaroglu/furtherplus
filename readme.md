@@ -131,9 +131,9 @@ If you use FURTHER+ in your research, please cite:
 
 ```
 @misc{dogaroglu2024furtherplus,
-  author = {Dogaroglu, Ege},
-  title = {FURTHER+: A Framework for Multi-Agent Social Learning with Internal Representations},
-  year = {2024},
+  author = {Dogaroglu, Ege Can},
+  title = {FURTHER+: A Framework for Multi-Agent Social Learning},
+  year = {2025},
   publisher = {GitHub},
   journal = {GitHub repository},
   howpublished = {\url{https://github.com/ecdogaroglu/furtherplus}}
