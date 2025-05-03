@@ -236,7 +236,7 @@ class ReplayBuffer:
 
 class GRUBeliefProcessor(nn.Module):
     """GRU-based belief state processor for FURTHER+."""
-    def __init__(self, input_dim, hidden_dim, action_dim, device=None):
+    def __init__(self, input_dim, hidden_dim, action_dim, device=None, num_belief_states=None):
         # Use the best available device if none is specified
         if device is None:
             device = get_best_device()
@@ -245,6 +245,7 @@ class GRUBeliefProcessor(nn.Module):
         self.hidden_dim = hidden_dim
         self.input_dim = input_dim
         self.action_dim = action_dim
+        self.num_belief_states = num_belief_states
         
         # GRU for processing observation history
         self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True)
@@ -255,12 +256,20 @@ class GRUBeliefProcessor(nn.Module):
                 nn.init.xavier_normal_(param)
             elif 'bias' in name:
                 nn.init.constant_(param, 0)
+        
+        # Add softmax head for belief distribution if num_belief_states is provided
+        if num_belief_states is not None:
+            self.belief_head = nn.Linear(hidden_dim, num_belief_states)
+            nn.init.xavier_normal_(self.belief_head.weight)
+            nn.init.constant_(self.belief_head.bias, 0)
+        else:
+            self.belief_head = None
     
-    def forward(self, observation, prev_belief=None):
+    def forward(self, observation, current_belief=None):
         """Update belief state based on new observation and action."""
         # If no previous belief, initialize with zeros
-        if prev_belief is None:
-            prev_belief = torch.zeros(1, 1, self.hidden_dim, device=self.device)
+        if current_belief is None:
+            current_belief = torch.zeros(1, 1, self.hidden_dim, device=self.device)
         
         # Ensure observation has batch dimension
         if observation.dim() == 1:
@@ -269,47 +278,24 @@ class GRUBeliefProcessor(nn.Module):
         # Add sequence dimension
         observation = observation.unsqueeze(1)
         
-        # Ensure prev_belief has correct dimensions [num_layers=1, batch_size, hidden_dim]
-        if prev_belief.dim() == 2:
-            prev_belief = prev_belief.unsqueeze(0)
+        # Ensure current_belief has correct dimensions [num_layers=1, batch_size, hidden_dim]
+        if current_belief.dim() == 2:
+            current_belief = current_belief.unsqueeze(0)
         
         # Process through GRU
-        _, new_belief = self.gru(observation, prev_belief)
+        _, new_belief = self.gru(observation, current_belief)
         
-        return new_belief
+        # Calculate belief distribution if softmax head is available
+        belief_distribution = None
+        if self.belief_head is not None:
+            # Extract the belief state (remove the first dimension which is num_layers)
+            belief_for_head = new_belief.squeeze(0)
+            # Pass through linear layer and apply softmax
+            logits = self.belief_head(belief_for_head)
+            belief_distribution = F.softmax(logits, dim=-1)
+        
+        return new_belief, belief_distribution
     
-    def process_sequence(self, observations):
-        """Process a sequence of observations to get belief states.
-        
-        Args:
-            observations: Tensor of shape [batch_size, seq_len, obs_dim]
-            
-        Returns:
-            Tensor of belief states for each time step [batch_size, seq_len, belief_dim]
-        """
-        batch_size, seq_len, _ = observations.shape
-        
-        # Initialize belief state
-        belief = torch.zeros(1, batch_size, self.hidden_dim, device=self.device)
-        
-        # Process each observation in sequence
-        beliefs = []
-        for t in range(seq_len):
-            # Get observation at time t
-            obs_t = observations[:, t, :]
-            
-            # Update belief
-            _, belief = self.gru(obs_t.unsqueeze(1), belief)
-            
-            # Store belief
-            beliefs.append(belief.clone())
-        
-        # Stack beliefs along sequence dimension
-        beliefs = torch.cat(beliefs, dim=1)  # [1, seq_len, batch_size, hidden_dim]
-        beliefs = beliefs.permute(2, 1, 0, 3).squeeze(2)  # [batch_size, seq_len, hidden_dim]
-        
-        return beliefs
-
 
 class EncoderNetwork(nn.Module):
     """Encoder network for inference of other agents' policies."""
@@ -581,7 +567,8 @@ class FURTHERPlusAgent:
             input_dim=observation_dim,
             hidden_dim=belief_dim,
             action_dim=action_dim,
-            device=device
+            device=device,
+            num_belief_states=num_agents  # Use num_agents as the number of belief states
         ).to(device)
         
         self.encoder = EncoderNetwork(
@@ -679,23 +666,25 @@ class FURTHERPlusAgent:
         self.current_mean = torch.randn(1, latent_dim, device=device) * 0.01
         self.current_logvar = torch.randn(1, latent_dim, device=device) * 0.01
         
+        # Initialize belief distribution
+        if self.belief_processor.belief_head is not None:
+            self.current_belief_distribution = torch.ones(1, num_agents, device=device) / num_agents
+        else:
+            self.current_belief_distribution = None
+        
         # For tracking learning metrics
         self.action_probs_history = []
         
         # Episode tracking
         self.episode_step = 0
     
-    def observe(self, observation, neighbor_actions=None, peer_action=None):
+    def observe(self, observation):
         """Update belief state based on new observation."""
         # Check if this is the first observation of the episode
         is_first_obs = (self.episode_step == 0)
         self.episode_step += 1
         
         # Process the observation
-        return self._observe_impl(observation, neighbor_actions, peer_action, is_first_obs)
-        
-    def _observe_impl(self, observation, neighbor_actions=None, peer_action=None, is_first_obs=False):
-        """Implementation of observation processing."""
         observation_tensor = torch.FloatTensor(observation).to(self.device)
         
         # Add batch dimension if needed
@@ -703,30 +692,22 @@ class FURTHERPlusAgent:
             observation_tensor = observation_tensor.unsqueeze(0)
         
         # If this is the first observation of an episode, use None to force GRU to initialize fresh
-        prev_belief = None if is_first_obs else self.current_belief
+        current_belief = None if is_first_obs else self.current_belief
         
         # Pass observation and belief to the belief processor
-        new_belief = self.belief_processor(
+        new_belief, belief_distribution = self.belief_processor(
             observation_tensor, 
-            prev_belief
+            current_belief
         )
         self.current_belief = new_belief.squeeze(0)
         
-        return self.current_belief
+        # Store the belief distribution if available
+        if belief_distribution is not None:
+            self.current_belief_distribution = belief_distribution.squeeze(0)
+        else:
+            self.current_belief_distribution = None
         
-    def process_trajectory_beliefs(self, observations_sequence):
-        """Process a sequence of observations to get sequential belief states.
-        
-        This ensures belief states are processed sequentially for each trajectory,
-        not just as independent samples.
-        
-        Args:
-            observations_sequence: Tensor of shape [batch_size, seq_len, obs_dim]
-            
-        Returns:
-            Tensor of belief states for each time step [batch_size, seq_len, belief_dim]
-        """
-        return self.belief_processor.process_sequence(observations_sequence)
+        return self.current_belief, self.current_belief_distribution
         
     def store_transition(self, observation, belief, latent, action, peer_action, reward, 
                          next_observation, next_belief, next_latent, mean=None, logvar=None, neighbor_actions=None):
@@ -746,6 +727,11 @@ class FURTHERPlusAgent:
         self.current_mean = torch.zeros(1, self.encoder.fc_mean.out_features, device=self.device)
         self.current_logvar = torch.zeros(1, self.encoder.fc_logvar.out_features, device=self.device)
         
+        # Reset belief distribution if it exists
+        if self.belief_processor.belief_head is not None:
+            num_belief_states = self.belief_processor.num_belief_states
+            self.current_belief_distribution = torch.ones(1, num_belief_states, device=self.device) / num_belief_states
+        
         # Reset episode step counter to ensure next observation is treated as first in episode
         self.episode_step = 0
         
@@ -754,11 +740,37 @@ class FURTHERPlusAgent:
         self.current_latent = self.current_latent.detach()
         self.current_mean = self.current_mean.detach()
         self.current_logvar = self.current_logvar.detach()
+        if self.current_belief_distribution is not None:
+            self.current_belief_distribution = self.current_belief_distribution.detach()
         
         # Also reset any cached states in the GRU
         for name, param in self.belief_processor.gru.named_parameters():
             if 'bias_hh' in name:  # Reset the bias related to hidden state
                 nn.init.constant_(param, 0)
+    
+    def get_belief_state(self):
+        """Return the current belief state.
+        
+        Returns:
+            belief: Current belief state tensor
+        """
+        return self.current_belief
+    
+    def get_latent_state(self):
+        """Return the current latent state.
+        
+        Returns:
+            latent: Current latent state tensor
+        """
+        return self.current_latent
+    
+    def get_belief_distribution(self):
+        """Return the current belief distribution.
+        
+        Returns:
+            belief_distribution: Current belief distribution tensor or None if not available
+        """
+        return self.current_belief_distribution
     
     def get_latent_distribution_params(self):
         """Return the current latent distribution parameters (mean and logvar).

@@ -19,7 +19,7 @@ class SocialLearningEnvironment:
         signal_accuracy: float = 0.75,
         network_type: str = "complete",
         network_params: Dict = None,
-        total_steps: int = 1000,
+        horizon: int = 1000,
         seed: Optional[int] = None
     ):
         """
@@ -31,14 +31,14 @@ class SocialLearningEnvironment:
             signal_accuracy: Probability that a signal matches the true state
             network_type: Type of network structure ('complete', 'ring', 'star', 'random')
             network_params: Parameters for network generation if network_type is 'random'
-            total_steps: Total number of steps to run
+            horizon: Total number of steps to run
             seed: Random seed for reproducibility
         """
         self.num_agents = num_agents
         self.num_states = num_states
         self.num_actions = num_states  # Actions correspond to states
         self.signal_accuracy = signal_accuracy
-        self.total_steps = total_steps
+        self.horizon = horizon
         
         # Set random seed
         if seed is not None:
@@ -240,7 +240,7 @@ class SocialLearningEnvironment:
             }
         
         # Check if we've reached the total number of steps
-        done = self.current_step >= self.total_steps
+        done = self.current_step >= self.horizon
         
         # Additional information
         info = {

@@ -35,12 +35,11 @@ def run_agents(env, args, training=True, model_path=None):
         learning_rates: Dictionary of learning rates for each agent
         serializable_metrics: Dictionary of metrics for JSON serialization
     """
-    # Setup environment and directories
-    setup_random_seeds(args.seed, env)
-    obs_dim = calculate_observation_dimension(env)
+    # Setup directory
     output_dir = create_output_directory(args, env, training)
     
     # Initialize agents and metrics
+    obs_dim = calculate_observation_dimension(env)
     agents = initialize_agents(env, args, obs_dim)
     replay_buffers = initialize_replay_buffers(agents, args, obs_dim, training)
     load_agent_models(agents, model_path, env.num_agents)
@@ -54,19 +53,49 @@ def run_agents(env, args, training=True, model_path=None):
     if training:
         write_config_file(args, env, theoretical_bounds, output_dir)
     
-    # Run simulation
-    observations, metrics = run_simulation(
-        env, agents, replay_buffers, metrics, args, 
-        theoretical_bounds, output_dir, training
-    )
+    # Determine number of episodes
+    num_episodes = args.num_episodes if training else 1
+    
+    print(f"Running {num_episodes} episode(s) with {args.horizon} steps per episode")
+    
+    # Initialize combined metrics to aggregate across episodes
+    combined_metrics = metrics.copy()
+    
+    # Episode loop
+    for episode in range(num_episodes):
+        # Set a different seed for each episode based on the base seed
+        episode_seed = args.seed + episode
+        setup_random_seeds(episode_seed, env)
+        print(f"\nStarting episode {episode+1}/{num_episodes} with seed {episode_seed}")
+        
+        # Reset metrics for this episode
+        if episode > 0:
+            metrics = initialize_metrics(env, args, training)
+        
+        # Run simulation for this episode
+        observations, episode_metrics = run_simulation(
+            env, agents, replay_buffers, metrics, args, 
+            theoretical_bounds, output_dir, training,
+            steps_per_episode=args.horizon
+        )
+        
+        # Merge episode metrics into combined metrics
+        if episode > 0:
+            for key in combined_metrics:
+                if isinstance(combined_metrics[key], list):
+                    combined_metrics[key].extend(episode_metrics[key])
+                elif isinstance(combined_metrics[key], dict):
+                    for agent_id in combined_metrics[key]:
+                        if isinstance(combined_metrics[key][agent_id], list):
+                            combined_metrics[key][agent_id].extend(episode_metrics[key][agent_id])
     
     # Process results
-    learning_rates = calculate_agent_learning_rates_from_metrics(metrics)
+    learning_rates = calculate_agent_learning_rates_from_metrics(combined_metrics)
     display_learning_rate_summary(learning_rates, theoretical_bounds['bound_rate'])
     
     # Save metrics and models
     serializable_metrics = prepare_serializable_metrics(
-        metrics, learning_rates, theoretical_bounds, args.total_steps, training
+        combined_metrics, learning_rates, theoretical_bounds, args.horizon, training
     )
     save_metrics_to_file(serializable_metrics, output_dir, training)
     
@@ -74,7 +103,7 @@ def run_agents(env, args, training=True, model_path=None):
         save_final_models(agents, output_dir)
     
     # Generate plots
-    generate_plots(metrics, env, args, output_dir, training)
+    generate_plots(combined_metrics, env, args, output_dir, training)
     
     return learning_rates, serializable_metrics
 
@@ -142,7 +171,10 @@ def initialize_replay_buffers(agents, args, obs_dim, training):
 
 def load_agent_models(agents, model_path, num_agents):
     """Load pre-trained models if a path is provided."""
+    
+    # If no model path is provided, skip loading
     if model_path is None:
+        print("No model path provided. Starting with fresh models.")
         return
     
     model_dir = Path(model_path)
@@ -199,9 +231,9 @@ def write_config_file(args, env, bounds, output_dir):
         json.dump(config, f, indent=2)
 
 
-def run_simulation(env, agents, replay_buffers, metrics, args, theoretical_bounds, output_dir, training):
+def run_simulation(env, agents, replay_buffers, metrics, args, theoretical_bounds, output_dir, training, steps_per_episode=None):
     """Run the main simulation loop."""
-    num_steps = args.total_steps
+    num_steps = steps_per_episode if steps_per_episode is not None else args.horizon
     mode_str = "training" if training else "evaluation"
     
     print(f"Starting {mode_str} for {num_steps} steps...")
@@ -211,6 +243,9 @@ def run_simulation(env, agents, replay_buffers, metrics, args, theoretical_bound
     observations = env.initialize()
     total_rewards = np.zeros(env.num_agents) if training else None
     metrics['true_states'].append(env.true_state)
+    
+    # Set global metrics for access in other functions
+    set_metrics(metrics)
     
     # Reset and initialize agent internal states
     reset_agent_internal_states(agents)
@@ -245,7 +280,7 @@ def run_simulation(env, agents, replay_buffers, metrics, args, theoretical_bound
         update_progress_display(steps_iterator, info, total_rewards, step, training)
         
         # Save models periodically if training
-        if training and args.save_model and (step + 1) % max(1, args.total_steps // 5) == 0:
+        if training and args.save_model and (step + 1) % max(1, args.horizon // 5) == 0:
             save_checkpoint_models(agents, output_dir, step)
         
         if done:
@@ -264,34 +299,57 @@ def reset_agent_internal_states(agents):
         agent.reset_internal_state()
 
 
+# Global metrics dictionary for tracking
+_metrics = None
+
+def get_metrics():
+    """Get the global metrics dictionary."""
+    global _metrics
+    return _metrics
+
+def set_metrics(metrics):
+    """Set the global metrics dictionary."""
+    global _metrics
+    _metrics = metrics
+
 def initialize_agent_belief_states(agents, observations, env):
     """Initialize agent belief states based on initial observations."""
     for agent_id, agent in agents.items():
         # Encode observation for the agent
         obs_data = observations[agent_id]
-        print(f"Signal type: {type(obs_data)}, value: {obs_data}")
-        
+        print(f"First signal for agent {agent_id} received: {obs_data['signal']}")
         # Extract signal from observation
         if isinstance(obs_data, dict) and 'signal' in obs_data:
             signal = obs_data['signal']
             if hasattr(signal, 'item'):  # Handle numpy scalar
                 signal = signal.item()
-            neighbor_actions = obs_data['neighbor_actions']
-        else:
-            signal = obs_data
-            if not isinstance(signal, int) and hasattr(signal, 'item'):
-                signal = signal.item()
-            neighbor_actions = {}  # No neighbor actions initially
+            if 'neighbor_actions' in obs_data:
+                neighbor_actions = obs_data['neighbor_actions']
+            else:
+                neighbor_actions = {}  # No neighbor actions initially
             
         encoded_obs = encode_observation(
             signal=signal,
-            neighbor_actions=neighbor_actions if neighbor_actions is not None else {},
+            neighbor_actions=neighbor_actions,
             num_agents=env.num_agents,
             num_states=env.num_states
         )
         
         # Initialize belief state
-        agent.observe(encoded_obs, neighbor_actions=neighbor_actions if neighbor_actions is not None else {})
+        agent.observe(encoded_obs)
+        
+        # Store initial belief states for visualization if evaluating
+        if not hasattr(agent, 'training') or not agent.training:
+            metrics = get_metrics()
+            if 'belief_states' in metrics and agent_id in metrics['belief_states']:
+                current_belief = agent.get_belief_state()
+                if current_belief is not None:
+                    metrics['belief_states'][agent_id].append(current_belief.detach().cpu().numpy())
+            
+            # Get belief distribution using the method
+            agent_belief_distribution = agent.get_belief_distribution()
+            if 'belief_distributions' in metrics and agent_id in metrics['belief_distributions'] and agent_belief_distribution is not None:
+                metrics['belief_distributions'][agent_id].append(agent_belief_distribution.detach().cpu().numpy())
 
 
 def select_agent_actions(agents, metrics):
@@ -375,16 +433,21 @@ def update_agent_states(agents, observations, next_observations, actions, reward
         )
         
         # Update agent belief state
-        agent.observe(encoded_next_obs, neighbor_actions=neighbor_actions)
+        agent.observe(encoded_next_obs)
         
-        # Store internal states for visualization if evaluating
-        if not training and args.plot_internal_states and 'belief_states' in metrics:
+        # Store internal states for visualization if requested (for both training and evaluation)
+        if args.plot_internal_states and 'belief_states' in metrics:
             current_belief = agent.get_belief_state()
             current_latent = agent.get_latent_state()
             if current_belief is not None:
-                metrics['belief_states'][agent_id].append(current_belief.cpu().numpy())
+                metrics['belief_states'][agent_id].append(current_belief.detach().cpu().numpy())
             if current_latent is not None:
-                metrics['latent_states'][agent_id].append(current_latent.cpu().numpy())
+                metrics['latent_states'][agent_id].append(current_latent.detach().cpu().numpy())
+            
+            # Store belief distribution if available
+            belief_distribution = agent.get_belief_distribution()
+            if belief_distribution is not None:
+                metrics['belief_distributions'][agent_id].append(belief_distribution.detach().cpu().numpy())
         
         # Store transition in replay buffer if training
         if training and agent_id in replay_buffers:

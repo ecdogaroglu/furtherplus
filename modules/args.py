@@ -17,7 +17,9 @@ def parse_args():
                         choices=['complete', 'ring', 'star', 'random'], help='Network structure')
     parser.add_argument('--network-density', type=float, default=0.5, 
                         help='Density for random networks')
-    parser.add_argument('--total-steps', type=int, default=10000, help='Total number of steps')
+    parser.add_argument('--horizon', type=int, default=10000, help='Total number of steps')
+    parser.add_argument('--num-episodes', type=int, default=1, 
+                        help='Number of episodes for training (true state is reset between episodes)')
     
     # Training parameters
     parser.add_argument('--batch-size', type=int, default=64, help='Batch size')

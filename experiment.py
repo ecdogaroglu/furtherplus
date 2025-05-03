@@ -14,7 +14,6 @@ from pathlib import Path
 from modules.environment import SocialLearningEnvironment
 from modules.args import parse_args
 from modules.simulation import run_agents
-from modules.comparison import compare_network_sizes
 
 
 def main():
@@ -22,14 +21,9 @@ def main():
     # Parse command-line arguments
     args = parse_args()
     
-    # Set random seeds
+    # Set initial random seeds
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    
-    # Handle network size comparison if requested
-    if args.compare_sizes:
-        compare_network_sizes(args)
-        return
     
     # Create environment
     env = SocialLearningEnvironment(
@@ -37,7 +31,7 @@ def main():
         signal_accuracy=args.signal_accuracy,
         network_type=args.network_type,
         network_params={'density': args.network_density} if args.network_type == 'random' else None,
-        total_steps=args.total_steps,
+        horizon=args.horizon,
         seed=args.seed
     )
     
@@ -52,6 +46,11 @@ def main():
             # Use the specified path
             model_path = Path(args.load_model)
             print(f"Loading models from specified path: {model_path}")
+    
+    # Print episode information if training
+    if not args.eval_only and args.num_episodes > 1:
+        print(f"Training with {args.num_episodes} episodes, {args.horizon} steps per episode")
+        print(f"True state will be randomly selected at the beginning of each episode with different seeds")
     
     # Run agents in training or evaluation mode
     if args.eval_only:

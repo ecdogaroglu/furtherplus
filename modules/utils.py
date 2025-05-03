@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Union
 import networkx as nx
 import torch
+import os
  
 def encode_observation(
     signal: int,
@@ -292,54 +293,6 @@ def plot_mistake_rates(
         plt.tight_layout()
         plt.show()
         
-def plot_learning_rate_by_network_size(
-    network_sizes: List[int],
-    learning_rates: Dict[str, List[float]],
-    theoretical_bounds: Dict[str, float] = None,
-    title: str = "Learning Rate vs Network Size",
-    save_path: Optional[str] = None
-) -> None:
-    """
-    Plot how learning rate scales with network size.
-    
-    Args:
-        network_sizes: List of network sizes
-        learning_rates: Dictionary mapping rate type (e.g., 'fastest', 'slowest', 'average') 
-                       to list of learning rates for each network size
-        theoretical_bounds: Dictionary of theoretical bounds to include as horizontal lines
-        title: Title of the plot
-        save_path: Path to save the figure (if None, figure is displayed)
-    """
-    plt.figure(figsize=(10, 6))
-    
-    # Plot learning rates vs network size
-    for label, rates in learning_rates.items():
-        plt.plot(network_sizes, rates, 'o-', label=label, linewidth=2, markersize=8)
-    
-    # Add theoretical bounds as horizontal lines
-    if theoretical_bounds:
-        for label, value in theoretical_bounds.items():
-            plt.axhline(y=value, linestyle='--', label=f"{label} ({value:.4f})")
-    
-    plt.xlabel("Network Size (n)")
-    plt.ylabel("Learning Rate (r)")
-    plt.title(title)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend(loc='best')
-    
-    # Use log scale for x-axis if there's a wide range of network sizes
-    if max(network_sizes) / min(network_sizes) > 10:
-        plt.xscale('log')
-        # Add minor grid lines
-        plt.grid(True, which='minor', linestyle=':', alpha=0.4)
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.tight_layout()
-        plt.show()
-        
 def plot_agent_action_probabilities(
     full_action_probs: Dict[int, List[List[float]]],
     true_states: List[int] = None,
@@ -469,10 +422,11 @@ def plot_incorrect_action_probabilities(
     save_path: Optional[str] = None,
     max_steps: Optional[int] = None,
     log_scale: bool = False,
-    show_learning_rates: bool = True
+    show_learning_rates: bool = True,
+    episode_length: Optional[int] = None
 ) -> None:
     """
-    Plot incorrect action probabilities for all agents in a single plot.
+    Plot incorrect action probabilities for all agents with separate subplots for each episode.
     
     Args:
         incorrect_probs: Dictionary mapping agent IDs to lists of incorrect action probabilities over time
@@ -481,253 +435,141 @@ def plot_incorrect_action_probabilities(
         max_steps: Maximum number of steps to plot (if None, plots all steps)
         log_scale: Whether to use logarithmic scale for y-axis
         show_learning_rates: Whether to calculate and display learning rates in the legend
+        episode_length: Length of each episode (if None, treats all data as a single episode)
     """
-    plt.figure(figsize=(12, 8))
+    # Determine total steps and number of episodes
+    total_steps = max(len(probs) for probs in incorrect_probs.values())
     
-    # Determine how many steps to plot
-    if max_steps is None:
-        # Find the agent with the most steps
-        max_steps = max(len(probs) for probs in incorrect_probs.values())
+    if episode_length is None:
+        # If episode_length is not provided, treat all data as a single episode
+        num_episodes = 1
+        episode_length = total_steps
     else:
-        # Limit to the specified number of steps
-        max_steps = min(max_steps, max(len(probs) for probs in incorrect_probs.values()))
+        # Calculate number of episodes based on total steps and episode length
+        num_episodes = (total_steps + episode_length - 1) // episode_length  # Ceiling division
+    
+    # Create a figure with subplots for each episode (2 per row)
+    num_rows = (num_episodes + 1) // 2  # Ceiling division to get number of rows
+    num_cols = min(2, num_episodes)  # At most 2 columns
+    
+    fig_width = 12  # Fixed width for 2 columns
+    fig_height = 5 * num_rows  # Height scales with number of rows
+    
+    # Create figure and subplots
+    fig, axes = plt.subplots(nrows=num_rows, ncols=num_cols, figsize=(fig_width, fig_height), 
+                            sharey=True, squeeze=False)
+    axes = axes.flatten()  # Flatten to make indexing easier
     
     # Define a colormap for different agents
     colors = plt.cm.tab10(np.linspace(0, 1, len(incorrect_probs)))
     
-    # Plot each agent's incorrect probabilities
-    for i, (agent_id, probs) in enumerate(sorted(incorrect_probs.items())):
-        # Limit to max_steps
-        agent_probs = probs[:max_steps]
-        time_steps = np.arange(len(agent_probs))
+    # Store learning rates for each agent across episodes
+    learning_rates = {agent_id: [] for agent_id in incorrect_probs.keys()}
+    
+    # Plot each episode in a separate subplot
+    for episode in range(num_episodes):
+        ax = axes[episode]
         
-        # Plot with appropriate scale
-        if log_scale:
-            line, = plt.semilogy(time_steps, agent_probs, label=f"Agent {agent_id}", 
-                               color=colors[i], linewidth=2)
-        else:
-            line, = plt.plot(time_steps, agent_probs, label=f"Agent {agent_id}", 
-                           color=colors[i], linewidth=2)
+        # Set subplot title
+        ax.set_title(f"Episode {episode+1}")
         
-        # Calculate and display learning rate if requested
-        if show_learning_rates and len(agent_probs) >= 10:
-            learning_rate = calculate_learning_rate(agent_probs)
+        # Calculate start and end indices for this episode
+        start_idx = episode * episode_length
+        end_idx = min(start_idx + episode_length, total_steps)
+        
+        # Plot each agent's data for this episode
+        for i, (agent_id, probs) in enumerate(sorted(incorrect_probs.items())):
+            agent_color = colors[i]
             
-            # Update the label with learning rate
-            line.set_label(f"Agent {agent_id} (r = {learning_rate:.4f})")
+            # Skip if we're out of data for this agent
+            if start_idx >= len(probs):
+                continue
+                
+            # Extract data for this episode
+            episode_probs = probs[start_idx:min(end_idx, len(probs))]
+            time_steps = np.arange(len(episode_probs))
             
-            # Plot fitted exponential decay
-            x = np.arange(len(agent_probs))
-            initial_value = agent_probs[0]
-            y = np.exp(-learning_rate * x) * initial_value
+            # Create label for this agent
+            label = f"Agent {agent_id}"
             
+            # Plot with appropriate scale
             if log_scale:
-                plt.semilogy(x, y, '--', alpha=0.5, color=line.get_color())
+                line, = ax.semilogy(time_steps, episode_probs, 
+                                  label=label,
+                                  color=agent_color,
+                                  linewidth=2)
             else:
-                plt.plot(x, y, '--', alpha=0.5, color=line.get_color())
-    
-    # Set labels and title
-    plt.xlabel("Time Steps")
-    plt.ylabel("Incorrect Action Probability" + (" (log scale)" if log_scale else ""))
-    plt.title(title)
-    plt.grid(True, which="both" if log_scale else "major", ls="--", alpha=0.7)
-    plt.legend(loc='best')
-    
-    # Set y-axis limits for better visualization
-    if log_scale:
-        plt.ylim(0.001, 1.0)
-    else:
-        plt.ylim(0, 1.0)
-    
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
-        plt.close()
-    else:
-        plt.show()
-        
-def plot_policy_vs_internal_states(
-    belief_states: Dict[int, List[torch.Tensor]],
-    latent_states: Dict[int, List[torch.Tensor]],
-    action_probs: Dict[int, List[List[float]]],
-    true_states: List[int] = None,
-    num_states: int = 2,
-    title: str = "Policy Stability vs Internal State Fluctuations",
-    save_path: Optional[str] = None,
-    max_steps: Optional[int] = None
-) -> None:
-    """
-    Plot policy outputs alongside belief and latent states to compare stability.
-    
-    Args:
-        belief_states: Dictionary mapping agent IDs to lists of belief state tensors
-        latent_states: Dictionary mapping agent IDs to lists of latent state tensors
-        action_probs: Dictionary mapping agent IDs to lists of action probability distributions
-        true_states: List of true states for each time step (to highlight state changes)
-        num_states: Number of possible states
-        title: Title of the plot
-        save_path: Path to save the figure (if None, figure is displayed)
-        max_steps: Maximum number of steps to plot (if None, plots all steps)
-    """
-    num_agents = len(belief_states)
-    
-    # Determine how many steps to plot
-    if max_steps is None:
-        # Find the agent with the most steps
-        max_steps = min(
-            max(len(beliefs) for beliefs in belief_states.values()),
-            max(len(latents) for latents in latent_states.values()),
-            max(len(probs) for probs in action_probs.values())
-        )
-    else:
-        # Limit to the specified number of steps
-        max_steps = min(
-            max_steps,
-            max(len(beliefs) for beliefs in belief_states.values()),
-            max(len(latents) for latents in latent_states.values()),
-            max(len(probs) for probs in action_probs.values())
-        )
-    
-    # Create a figure with subplots for each agent
-    fig, axes = plt.subplots(
-        num_agents, 
-        3,  # Three columns: belief variance, latent variance, policy outputs
-        figsize=(18, 5 * num_agents),
-        gridspec_kw={'width_ratios': [1, 1, 1.5]},
-        sharex=True
-    )
-    
-    # If there's only one agent, make sure axes is a 2D array
-    if num_agents == 1:
-        axes = np.array([axes])
-    
-    # Plot each agent
-    for j, agent_id in enumerate(sorted(belief_states.keys())):
-        # Get data for this agent
-        agent_beliefs = belief_states[agent_id][:max_steps]
-        agent_latents = latent_states[agent_id][:max_steps]
-        agent_action_probs = action_probs[agent_id][:max_steps]
-        
-        # Create time steps array
-        time_steps = np.arange(len(agent_beliefs))
-        
-        # 1. Plot belief state variance over time
-        ax_belief = axes[j, 0]
-        
-        # Calculate variance across belief dimensions at each time step
-        belief_variances = []
-        for belief in agent_beliefs:
-            if isinstance(belief, torch.Tensor):
-                belief_np = belief.detach().cpu().numpy().flatten()
-            else:
-                belief_np = np.array(belief).flatten()
-            belief_variances.append(np.var(belief_np))
-        
-        ax_belief.plot(time_steps, belief_variances, 'b-', linewidth=2, label='Belief Variance')
-        ax_belief.set_title(f"Agent {agent_id} Belief State Variance")
-        ax_belief.set_ylabel("Variance")
-        ax_belief.grid(True, linestyle='--', alpha=0.7)
-        
-        # 2. Plot latent state variance over time
-        ax_latent = axes[j, 1]
-        
-        # Calculate variance across latent dimensions at each time step
-        latent_variances = []
-        for latent in agent_latents:
-            if isinstance(latent, torch.Tensor):
-                latent_np = latent.detach().cpu().numpy().flatten()
-            else:
-                latent_np = np.array(latent).flatten()
-            latent_variances.append(np.var(latent_np))
-        
-        ax_latent.plot(time_steps, latent_variances, 'g-', linewidth=2, label='Latent Variance')
-        ax_latent.set_title(f"Agent {agent_id} Latent State Variance")
-        ax_latent.set_ylabel("Variance")
-        ax_latent.grid(True, linestyle='--', alpha=0.7)
-        
-        # 3. Plot policy outputs (action probabilities) over time
-        ax_policy = axes[j, 2]
-        
-        # Convert action probabilities to numpy array
-        action_probs_np = np.array(agent_action_probs)
-        
-        # Plot each action probability
-        for action in range(num_states):
-            ax_policy.plot(
-                time_steps, 
-                action_probs_np[:, action], 
-                label=f"Action {action} Prob",
-                linewidth=2
-            )
-        
-        ax_policy.set_title(f"Agent {agent_id} Action Probabilities")
-        ax_policy.set_ylabel("Probability")
-        ax_policy.set_ylim(0, 1)
-        ax_policy.grid(True, linestyle='--', alpha=0.7)
-        ax_policy.legend(loc='upper right')
-        
-        # Highlight true state changes if provided
-        if true_states:
-            # Limit true states to the number of steps we're plotting
-            plot_true_states = true_states[:len(time_steps)]
+                line, = ax.plot(time_steps, episode_probs, 
+                              label=label,
+                              color=agent_color,
+                              linewidth=2)
             
-            # Create a step function for the true state
-            prev_state = plot_true_states[0]
-            state_changes = [(0, prev_state)]
-            
-            for t, state in enumerate(plot_true_states[1:], 1):
-                if state != prev_state:
-                    state_changes.append((t, state))
-                    prev_state = state
-            
-            # Plot vertical lines at state changes on all subplots
-            for t, state in state_changes[1:]:  # Skip the first one (initial state)
-                for ax in axes[j]:
-                    ax.axvline(
-                        x=t,
-                        color='red',
-                        linestyle='--',
-                        alpha=0.5,
-                        label="State Change" if t == state_changes[1][0] and ax == axes[j, 0] else None
-                    )
-                    
-                # Add state change label only on the policy plot
-                axes[j, 2].text(
-                    t, 
-                    0.9,
-                    f"→ State {state}",
-                    horizontalalignment='left',
-                    verticalalignment='top',
-                    fontsize=9,
-                    bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
-                )
-            
-            # Add initial state label
-            axes[j, 2].text(
-                0, 
-                0.9,
-                f"State {plot_true_states[0]}",
-                horizontalalignment='left',
-                verticalalignment='top',
-                fontsize=9,
-                bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
-            )
-    
-    # Set common x-axis label
-    for ax in axes[-1]:
+            # Calculate and display learning rate if requested
+            if show_learning_rates and len(episode_probs) >= 10:
+                learning_rate = calculate_learning_rate(episode_probs)
+                learning_rates[agent_id].append(learning_rate)
+                
+                # Update the label with learning rate
+                line.set_label(f"{label} (r = {learning_rate:.4f})")
+                
+                # Plot fitted exponential decay
+                x = np.arange(len(episode_probs))
+                initial_value = episode_probs[0]
+                y = np.exp(-learning_rate * x) * initial_value
+                
+                if log_scale:
+                    ax.semilogy(x, y, '--', alpha=0.3, color=line.get_color())
+                else:
+                    ax.plot(x, y, '--', alpha=0.3, color=line.get_color())
+        
+        # Set labels and grid
         ax.set_xlabel("Time Steps")
+        if episode == 0:  # Only set y-label on the first subplot
+            ax.set_ylabel("Incorrect Action Probability" + (" (log scale)" if log_scale else ""))
+        
+        ax.grid(True, which="both" if log_scale else "major", ls="--", alpha=0.7)
+        
+        # Set y-axis limits for better visualization
+        if log_scale:
+            ax.set_ylim(0.001, 1.0)
+        else:
+            ax.set_ylim(0, 1.0)
+        
+        # Add legend to each subplot
+        ax.legend(loc='best', fontsize='small')
     
-    plt.tight_layout()
-    plt.suptitle(title, fontsize=16, y=1.02)
+    # Set a common title for the entire figure
+    fig.suptitle(title, fontsize=16)
+    
+    # Add a text box with average learning rates across episodes
+    if show_learning_rates and num_episodes > 1:
+        avg_rates_text = "Average Learning Rates:\n"
+        for agent_id, rates in learning_rates.items():
+            if rates:  # Only include if we have rates
+                avg_rate = np.mean(rates)
+                avg_rates_text += f"Agent {agent_id}: {avg_rate:.4f}\n"
+        
+        # Add text box to the figure
+        fig.text(0.01, 0.01, avg_rates_text, fontsize=10, 
+                 bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Adjust layout to make room for suptitle
     
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+            
+            # Save the figure
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Saved incorrect action probabilities plot to {save_path}")
+            plt.close()
+        except Exception as e:
+            print(f"Error saving plot to {save_path}: {e}")
+            plt.close()
     else:
         plt.show()
-
+        
 def plot_latent_states(
     latent_states: Dict[int, List[torch.Tensor]],
     true_states: List[int] = None,
@@ -735,10 +577,11 @@ def plot_latent_states(
     title: str = "Agent Latent States Over Time",
     save_path: Optional[str] = None,
     max_steps: Optional[int] = None,
-    max_dims: int = 10
+    max_dims: int = 10,
+    episode_length: Optional[int] = None
 ) -> None:
     """
-    Plot the latent state evolution of agents over time.
+    Plot the latent state evolution of agents over time with separate subplots for each episode.
     
     Args:
         latent_states: Dictionary mapping agent IDs to lists of latent state tensors
@@ -748,141 +591,410 @@ def plot_latent_states(
         save_path: Path to save the figure (if None, figure is displayed)
         max_steps: Maximum number of steps to plot (if None, plots all steps)
         max_dims: Maximum number of latent dimensions to plot
+        episode_length: Length of each episode (if None, treats all data as a single episode)
     """
     num_agents = len(latent_states)
     
-    # Determine how many steps to plot
-    if max_steps is None:
-        # Find the agent with the most steps
-        max_steps = max(len(latents) for latents in latent_states.values())
-    else:
-        # Limit to the specified number of steps
-        max_steps = min(max_steps, max(len(latents) for latents in latent_states.values()))
+    # Determine total steps and number of episodes
+    total_steps = max(len(latents) for latents in latent_states.values())
     
-    # Create a figure with subplots for each agent
-    fig, axes = plt.subplots(
-        num_agents, 
-        1, 
-        figsize=(12, 4 * num_agents),
-        sharex=True
+    if episode_length is None:
+        # If episode_length is not provided, treat all data as a single episode
+        num_episodes = 1
+        episode_length = total_steps
+    else:
+        # Calculate number of episodes based on total steps and episode length
+        num_episodes = (total_steps + episode_length - 1) // episode_length  # Ceiling division
+    
+    # Limit to max_steps if specified
+    if max_steps is not None:
+        total_steps = min(total_steps, max_steps)
+        # Recalculate number of episodes
+        num_episodes = min(num_episodes, (total_steps + episode_length - 1) // episode_length)
+    
+    # Arrange episodes in a grid with 2 columns
+    num_episode_cols = min(2, num_episodes)  # At most 2 columns
+    num_episode_rows = (num_episodes + num_episode_cols - 1) // num_episode_cols  # Ceiling division
+    
+    # Create a figure with subplots arranged in a grid
+    # Each agent gets a row for each set of episodes
+    total_rows = num_agents * num_episode_rows
+    fig_width = 12  # Fixed width for 2 columns
+    fig_height = 4 * total_rows
+    
+    fig, all_axes = plt.subplots(
+        total_rows,
+        num_episode_cols, 
+        figsize=(fig_width, fig_height),
+        sharex='col',  # Share x-axis within columns
+        sharey='row'   # Share y-axis within rows
     )
     
-    # If there's only one agent, make sure axes is an array
-    if num_agents == 1:
-        axes = np.array([axes])
+    # Make sure all_axes is a 2D array
+    if total_rows == 1 and num_episode_cols == 1:
+        all_axes = np.array([[all_axes]])
+    elif total_rows == 1:
+        all_axes = np.array([all_axes])
+    elif num_episode_cols == 1:
+        all_axes = np.array([[ax] for ax in all_axes])
     
     # Define colors for latent dimensions
     colors = plt.cm.tab20(np.linspace(0, 1, max_dims))
     
-    # Plot each agent
+    # Plot each agent and episode
     for j, agent_id in enumerate(sorted(latent_states.keys())):
-        ax = axes[j]
-        
-        # Get latent states for this agent
-        agent_latents = latent_states[agent_id][:max_steps]
-        
-        # Create time steps array
-        time_steps = np.arange(len(agent_latents))
-        
-        # Extract latent dimensions (up to max_dims)
-        latent_dim = agent_latents[0].shape[-1]
-        plot_dims = min(latent_dim, max_dims)
-        
-        # Transpose the data to get latent dimensions over time
-        latent_values = [[] for _ in range(plot_dims)]
-        for latent in agent_latents:
-            # Convert to numpy and flatten if needed
-            if isinstance(latent, torch.Tensor):
-                latent_np = latent.detach().cpu().numpy()
-                if latent_np.ndim > 1:
-                    latent_np = latent_np.flatten()
-            else:
-                latent_np = np.array(latent)
-                if latent_np.ndim > 1:
-                    latent_np = latent_np.flatten()
+        for ep in range(num_episodes):
+            # Calculate the row and column in the grid
+            grid_row = (j * num_episode_rows) + (ep // num_episode_cols)
+            grid_col = ep % num_episode_cols
             
-            # Store values for each dimension
-            for dim in range(plot_dims):
-                if dim < len(latent_np):
-                    latent_values[dim].append(latent_np[dim])
+            # Skip if we're out of bounds (can happen with odd number of episodes)
+            if grid_row >= total_rows or grid_col >= num_episode_cols:
+                continue
+                
+            ax = all_axes[grid_row, grid_col]
+            
+            # Calculate start and end indices for this episode
+            start_idx = ep * episode_length
+            end_idx = min(start_idx + episode_length, total_steps)
+            
+            # Skip if we're out of data for this agent
+            if start_idx >= len(latent_states[agent_id]):
+                continue
+            
+            # Get latent states for this agent and episode
+            agent_latents = latent_states[agent_id][start_idx:min(end_idx, len(latent_states[agent_id]))]
+            
+            # Create time steps array (relative to episode start)
+            time_steps = np.arange(len(agent_latents))
+            
+            # Skip if no data
+            if len(agent_latents) == 0:
+                continue
+            
+            # Extract latent dimensions (up to max_dims)
+            latent_dim = agent_latents[0].shape[-1]
+            plot_dims = min(latent_dim, max_dims)
+            
+            # Transpose the data to get latent dimensions over time
+            latent_values = [[] for _ in range(plot_dims)]
+            for latent in agent_latents:
+                # Convert to numpy and flatten if needed
+                if isinstance(latent, torch.Tensor):
+                    latent_np = latent.detach().cpu().numpy()
+                    if latent_np.ndim > 1:
+                        latent_np = latent_np.flatten()
                 else:
-                    latent_values[dim].append(0.0)
-        
-        # Plot each latent dimension
-        for dim in range(plot_dims):
-            ax.plot(
-                time_steps, 
-                latent_values[dim], 
-                label=f"Dim {dim}" if dim < 10 else None,  # Only label first 10 dimensions
-                color=colors[dim],
-                linewidth=1.5,
-                alpha=0.8
-            )
-        
-        # Highlight true state changes if provided
-        if true_states:
-            # Limit true states to the number of steps we're plotting
-            plot_true_states = true_states[:len(time_steps)]
+                    latent_np = np.array(latent)
+                    if latent_np.ndim > 1:
+                        latent_np = latent_np.flatten()
+                
+                # Store values for each dimension
+                for dim in range(plot_dims):
+                    if dim < len(latent_np):
+                        latent_values[dim].append(latent_np[dim])
+                    else:
+                        latent_values[dim].append(0.0)
             
-            # Create a step function for the true state
-            prev_state = plot_true_states[0]
-            state_changes = [(0, prev_state)]
-            
-            for t, state in enumerate(plot_true_states[1:], 1):
-                if state != prev_state:
-                    state_changes.append((t, state))
-                    prev_state = state
-            
-            # Plot vertical lines at state changes
-            for t, state in state_changes[1:]:  # Skip the first one (initial state)
-                ax.axvline(
-                    x=t,
-                    color='red',
-                    linestyle='--',
-                    alpha=0.5,
-                    label="State Change" if t == state_changes[1][0] else None  # Only label the first one
-                )
-                ax.text(
-                    t, 
-                    ax.get_ylim()[1] * 0.9,
-                    f"→ State {state}",
-                    horizontalalignment='left',
-                    verticalalignment='top',
-                    fontsize=9,
-                    bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
+            # Plot each latent dimension
+            for dim in range(plot_dims):
+                ax.plot(
+                    time_steps, 
+                    latent_values[dim], 
+                    label=f"Dim {dim}" if dim < 10 else None,  # Only label first 10 dimensions
+                    color=colors[dim],
+                    linewidth=1.5,
+                    alpha=0.8
                 )
             
-            # Add initial state label
-            ax.text(
-                0, 
-                ax.get_ylim()[1] * 0.9,
-                f"State {plot_true_states[0]}",
-                horizontalalignment='left',
-                verticalalignment='top',
-                fontsize=9,
-                bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
-            )
-        
-        # Set title and labels
-        ax.set_title(f"Agent {agent_id} Latent State Evolution")
-        ax.set_ylabel("Latent Value")
-        ax.grid(True, linestyle='--', alpha=0.7)
-        
-        # Add legend with limited entries to avoid overcrowding
-        if plot_dims > 10:
-            ax.legend(loc='upper right', ncol=5, fontsize='small')
-        else:
-            ax.legend(loc='upper right', ncol=min(5, plot_dims), fontsize='small')
+            # Highlight true state changes if provided
+            if true_states and start_idx < len(true_states):
+                # Get true states for this episode
+                episode_true_states = true_states[start_idx:min(end_idx, len(true_states))]
+                
+                # Create a step function for the true state
+                if len(episode_true_states) > 0:
+                    prev_state = episode_true_states[0]
+                    state_changes = [(0, prev_state)]
+                    
+                    for t, state in enumerate(episode_true_states[1:], 1):
+                        if state != prev_state:
+                            state_changes.append((t, state))
+                            prev_state = state
+                    
+                    # Plot vertical lines at state changes
+                    for t, state in state_changes[1:]:  # Skip the first one (initial state)
+                        ax.axvline(
+                            x=t,
+                            color='red',
+                            linestyle='--',
+                            alpha=0.5,
+                            label="State Change" if t == state_changes[1][0] else None  # Only label the first one
+                        )
+                        ax.text(
+                            t, 
+                            ax.get_ylim()[1] * 0.9,
+                            f"→ State {state}",
+                            horizontalalignment='left',
+                            verticalalignment='top',
+                            fontsize=9,
+                            bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
+                        )
+                    
+                    # Add initial state label
+                    ax.text(
+                        0, 
+                        ax.get_ylim()[1] * 0.9,
+                        f"State {episode_true_states[0]}",
+                        horizontalalignment='left',
+                        verticalalignment='top',
+                        fontsize=9,
+                        bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
+                    )
+            
+            # Set title and labels
+            # Add agent ID to title
+            ax.set_title(f"Agent {agent_id} - Episode {ep+1}")
+            
+            # Set y-label for leftmost plots
+            if grid_col == 0:
+                ax.set_ylabel("Latent Value")
+            
+            ax.grid(True, linestyle='--', alpha=0.7)
+            
+            # Add legend only to the first subplot to avoid clutter
+            if j == 0 and ep == 0:
+                if plot_dims > 10:
+                    ax.legend(loc='upper right', ncol=5, fontsize='small')
+                else:
+                    ax.legend(loc='upper right', ncol=min(5, plot_dims), fontsize='small')
     
-    # Set common x-axis label
-    axes[-1].set_xlabel("Time Steps")
+    # Set common x-axis label for the bottom row
+    for col in range(num_episode_cols):
+        if col < all_axes.shape[1]:  # Make sure column exists
+            all_axes[-1, col].set_xlabel("Time Steps")
     
     plt.tight_layout()
     plt.suptitle(title, fontsize=16, y=1.02)
     
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+            
+            # Save the figure
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Saved latent states plot to {save_path}")
+            plt.close()
+        except Exception as e:
+            print(f"Error saving plot to {save_path}: {e}")
+            plt.close()
+    else:
+        plt.show()
+
+def plot_belief_distributions(
+    belief_distributions: Dict[int, List[torch.Tensor]],
+    true_states: List[int] = None,
+    title: str = "Agent Belief Distributions Over Time",
+    save_path: Optional[str] = None,
+    max_steps: Optional[int] = None,
+    episode_length: Optional[int] = None
+) -> None:
+    """
+    Plot the belief distribution evolution of agents over time with separate subplots for each episode.
+    
+    Args:
+        belief_distributions: Dictionary mapping agent IDs to lists of belief distribution tensors
+        true_states: List of true states for each time step (to highlight state changes)
+        title: Title of the plot
+        save_path: Path to save the figure (if None, figure is displayed)
+        max_steps: Maximum number of steps to plot (if None, plots all steps)
+        episode_length: Length of each episode (if None, treats all data as a single episode)
+    """
+    
+    num_agents = len(belief_distributions)
+    
+    # Determine total steps and number of episodes
+    total_steps = max(len(beliefs) for beliefs in belief_distributions.values())
+    
+    if episode_length is None:
+        # If episode_length is not provided, treat all data as a single episode
+        num_episodes = 1
+        episode_length = total_steps
+    else:
+        # Calculate number of episodes based on total steps and episode length
+        num_episodes = (total_steps + episode_length - 1) // episode_length  # Ceiling division
+    
+    # Limit to max_steps if specified
+    if max_steps is not None:
+        total_steps = min(total_steps, max_steps)
+        # Recalculate number of episodes
+        num_episodes = min(num_episodes, (total_steps + episode_length - 1) // episode_length)
+    
+    # Arrange episodes in a grid with 2 columns
+    num_episode_cols = min(2, num_episodes)  # At most 2 columns
+    num_episode_rows = (num_episodes + num_episode_cols - 1) // num_episode_cols  # Ceiling division
+    
+    # Create a figure with subplots arranged in a grid
+    # Each agent gets a row for each set of episodes
+    total_rows = num_agents * num_episode_rows
+    fig_width = 14  # Fixed width for 2 columns
+    fig_height = 4 * total_rows
+    
+    fig, all_axes = plt.subplots(
+        total_rows,
+        num_episode_cols, 
+        figsize=(fig_width, fig_height),
+        sharex='col',  # Share x-axis within columns
+        sharey='row'   # Share y-axis within rows
+    )
+    
+    # Make sure all_axes is a 2D array
+    if total_rows == 1 and num_episode_cols == 1:
+        all_axes = np.array([[all_axes]])
+    elif total_rows == 1:
+        all_axes = np.array([all_axes])
+    elif num_episode_cols == 1:
+        all_axes = np.array([[ax] for ax in all_axes])
+    
+    # Plot each agent and episode
+    for j, agent_id in enumerate(sorted(belief_distributions.keys())):
+        for ep in range(num_episodes):
+            # Calculate the row and column in the grid
+            grid_row = (j * num_episode_rows) + (ep // num_episode_cols)
+            grid_col = ep % num_episode_cols
+            
+            # Skip if we're out of bounds (can happen with odd number of episodes)
+            if grid_row >= total_rows or grid_col >= num_episode_cols:
+                continue
+                
+            ax = all_axes[grid_row, grid_col]
+            
+            # Calculate start and end indices for this episode
+            start_idx = ep * episode_length
+            end_idx = min(start_idx + episode_length, total_steps)
+            
+            # Skip if we're out of data for this agent
+            if start_idx >= len(belief_distributions[agent_id]):
+                continue
+            
+            # Get belief distributions for this agent and episode
+            agent_beliefs = belief_distributions[agent_id][start_idx:min(end_idx, len(belief_distributions[agent_id]))]
+            
+            # Create time steps array (relative to episode start)
+            time_steps = np.arange(len(agent_beliefs))
+            
+            # Skip if no data
+            if len(agent_beliefs) == 0:
+                continue
+            
+            # Get the number of belief states
+            num_belief_states = agent_beliefs[0].shape[-1]
+            
+            # Create a heatmap-style plot
+            belief_values = np.zeros((len(agent_beliefs), num_belief_states))
+            for t, belief in enumerate(agent_beliefs):
+                # Convert to numpy
+                if isinstance(belief, torch.Tensor):
+                    belief_np = belief.detach().cpu().numpy()
+                    if belief_np.ndim > 1:
+                        belief_np = belief_np.flatten()
+                else:
+                    belief_np = np.array(belief)
+                    if belief_np.ndim > 1:
+                        belief_np = belief_np.flatten()
+                
+                belief_values[t] = belief_np
+            
+            # Plot heatmap
+            im = ax.imshow(
+                belief_values.T,  # Transpose to have belief states on y-axis
+                aspect='auto',
+                cmap='viridis',
+                interpolation='nearest',
+                origin='lower',
+                extent=[0, len(agent_beliefs), 0, num_belief_states]
+            )
+            
+            # Add colorbar
+            plt.colorbar(im, ax=ax, label='Probability')
+            
+            # Highlight true state changes if provided
+            if true_states and start_idx < len(true_states):
+                # Get true states for this episode
+                episode_true_states = true_states[start_idx:min(end_idx, len(true_states))]
+                
+                # Create a step function for the true state
+                if len(episode_true_states) > 0:
+                    prev_state = episode_true_states[0]
+                    state_changes = [(0, prev_state)]
+                    
+                    for t, state in enumerate(episode_true_states[1:], 1):
+                        if state != prev_state:
+                            state_changes.append((t, state))
+                            prev_state = state
+                    
+                    # Plot vertical lines at state changes
+                    for t, state in state_changes[1:]:  # Skip the first one (initial state)
+                        ax.axvline(
+                            x=t,
+                            color='red',
+                            linestyle='--',
+                            alpha=0.7,
+                            label="State Change" if t == state_changes[1][0] else None  # Only label the first one
+                        )
+                        ax.text(
+                            t, 
+                            num_belief_states * 0.9,
+                            f"→ State {state}",
+                            horizontalalignment='left',
+                            verticalalignment='top',
+                            fontsize=9,
+                            bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
+                        )
+                    
+                    # Add initial state label
+                    ax.text(
+                        0, 
+                        num_belief_states * 0.9,
+                        f"State {episode_true_states[0]}",
+                        horizontalalignment='left',
+                        verticalalignment='top',
+                        fontsize=9,
+                        bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
+                    )
+            
+            # Set title and labels
+            ax.set_title(f"Agent {agent_id} - Episode {ep+1}")
+            ax.set_ylabel("Belief State")
+            
+            # Add y-ticks for each belief state
+            ax.set_yticks(np.arange(num_belief_states) + 0.5)
+            ax.set_yticklabels([f"State {i}" for i in range(num_belief_states)])
+            
+            # Add grid
+            ax.grid(True, linestyle='--', alpha=0.3, which='both')
+    
+    # Set common x-axis label for the bottom row
+    for col in range(num_episode_cols):
+        if col < all_axes.shape[1]:  # Make sure column exists
+            all_axes[-1, col].set_xlabel("Time Steps")
+    
+    plt.tight_layout()
+    plt.suptitle(title, fontsize=16, y=1.02)
+    
+    if save_path:
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+            
+            # Save the figure
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Saved belief distributions plot to {save_path}")
+            plt.close()
+        except Exception as e:
+            print(f"Error saving plot to {save_path}: {e}")
+            plt.close()
     else:
         plt.show()
 
@@ -893,10 +1005,11 @@ def plot_belief_states(
     title: str = "Agent Belief States Over Time",
     save_path: Optional[str] = None,
     max_steps: Optional[int] = None,
-    max_dims: int = 10
+    max_dims: int = 10,
+    episode_length: Optional[int] = None
 ) -> None:
     """
-    Plot the belief state evolution of agents over time.
+    Plot the belief state evolution of agents over time with separate subplots for each episode.
     
     Args:
         belief_states: Dictionary mapping agent IDs to lists of belief state tensors
@@ -906,345 +1019,203 @@ def plot_belief_states(
         save_path: Path to save the figure (if None, figure is displayed)
         max_steps: Maximum number of steps to plot (if None, plots all steps)
         max_dims: Maximum number of belief dimensions to plot
+        episode_length: Length of each episode (if None, treats all data as a single episode)
     """
     num_agents = len(belief_states)
     
-    # Determine how many steps to plot
-    if max_steps is None:
-        # Find the agent with the most steps
-        max_steps = max(len(beliefs) for beliefs in belief_states.values())
-    else:
-        # Limit to the specified number of steps
-        max_steps = min(max_steps, max(len(beliefs) for beliefs in belief_states.values()))
+    # Determine total steps and number of episodes
+    total_steps = max(len(beliefs) for beliefs in belief_states.values())
     
-    # Create a figure with subplots for each agent
-    fig, axes = plt.subplots(
-        num_agents, 
-        1, 
-        figsize=(12, 4 * num_agents),
-        sharex=True
+    if episode_length is None:
+        # If episode_length is not provided, treat all data as a single episode
+        num_episodes = 1
+        episode_length = total_steps
+    else:
+        # Calculate number of episodes based on total steps and episode length
+        num_episodes = (total_steps + episode_length - 1) // episode_length  # Ceiling division
+    
+    # Limit to max_steps if specified
+    if max_steps is not None:
+        total_steps = min(total_steps, max_steps)
+        # Recalculate number of episodes
+        num_episodes = min(num_episodes, (total_steps + episode_length - 1) // episode_length)
+    
+    # Arrange episodes in a grid with 2 columns
+    num_episode_cols = min(2, num_episodes)  # At most 2 columns
+    num_episode_rows = (num_episodes + num_episode_cols - 1) // num_episode_cols  # Ceiling division
+    
+    # Create a figure with subplots arranged in a grid
+    # Each agent gets a row for each set of episodes
+    total_rows = num_agents * num_episode_rows
+    fig_width = 12  # Fixed width for 2 columns
+    fig_height = 4 * total_rows
+    
+    fig, all_axes = plt.subplots(
+        total_rows,
+        num_episode_cols, 
+        figsize=(fig_width, fig_height),
+        sharex='col',  # Share x-axis within columns
+        sharey='row'   # Share y-axis within rows
     )
     
-    # If there's only one agent, make sure axes is an array
-    if num_agents == 1:
-        axes = np.array([axes])
+    # Make sure all_axes is a 2D array
+    if total_rows == 1 and num_episode_cols == 1:
+        all_axes = np.array([[all_axes]])
+    elif total_rows == 1:
+        all_axes = np.array([all_axes])
+    elif num_episode_cols == 1:
+        all_axes = np.array([[ax] for ax in all_axes])
     
     # Define colors for belief dimensions
     colors = plt.cm.tab20(np.linspace(0, 1, max_dims))
     
-    # Plot each agent
+    # Plot each agent and episode
     for j, agent_id in enumerate(sorted(belief_states.keys())):
-        ax = axes[j]
-        
-        # Get belief states for this agent
-        agent_beliefs = belief_states[agent_id][:max_steps]
-        
-        # Create time steps array
-        time_steps = np.arange(len(agent_beliefs))
-        
-        # Extract belief dimensions (up to max_dims)
-        belief_dim = agent_beliefs[0].shape[-1]
-        plot_dims = min(belief_dim, max_dims)
-        
-        # Transpose the data to get belief dimensions over time
-        belief_values = [[] for _ in range(plot_dims)]
-        for belief in agent_beliefs:
-            # Convert to numpy and flatten if needed
-            if isinstance(belief, torch.Tensor):
-                belief_np = belief.detach().cpu().numpy()
-                if belief_np.ndim > 1:
-                    belief_np = belief_np.flatten()
-            else:
-                belief_np = np.array(belief)
-                if belief_np.ndim > 1:
-                    belief_np = belief_np.flatten()
+        for ep in range(num_episodes):
+            # Calculate the row and column in the grid
+            grid_row = (j * num_episode_rows) + (ep // num_episode_cols)
+            grid_col = ep % num_episode_cols
             
-            # Store values for each dimension
-            for dim in range(plot_dims):
-                if dim < len(belief_np):
-                    belief_values[dim].append(belief_np[dim])
+            # Skip if we're out of bounds (can happen with odd number of episodes)
+            if grid_row >= total_rows or grid_col >= num_episode_cols:
+                continue
+                
+            ax = all_axes[grid_row, grid_col]
+            
+            # Calculate start and end indices for this episode
+            start_idx = ep * episode_length
+            end_idx = min(start_idx + episode_length, total_steps)
+            
+            # Skip if we're out of data for this agent
+            if start_idx >= len(belief_states[agent_id]):
+                continue
+            
+            # Get belief states for this agent and episode
+            agent_beliefs = belief_states[agent_id][start_idx:min(end_idx, len(belief_states[agent_id]))]
+            
+            # Create time steps array (relative to episode start)
+            time_steps = np.arange(len(agent_beliefs))
+            
+            # Skip if no data
+            if len(agent_beliefs) == 0:
+                continue
+            
+            # Extract belief dimensions (up to max_dims)
+            belief_dim = agent_beliefs[0].shape[-1]
+            plot_dims = min(belief_dim, max_dims)
+            
+            # Transpose the data to get belief dimensions over time
+            belief_values = [[] for _ in range(plot_dims)]
+            for belief in agent_beliefs:
+                # Convert to numpy and flatten if needed
+                if isinstance(belief, torch.Tensor):
+                    belief_np = belief.detach().cpu().numpy()
+                    if belief_np.ndim > 1:
+                        belief_np = belief_np.flatten()
                 else:
-                    belief_values[dim].append(0.0)
-        
-        # Plot each belief dimension
-        for dim in range(plot_dims):
-            ax.plot(
-                time_steps, 
-                belief_values[dim], 
-                label=f"Dim {dim}" if dim < 10 else None,  # Only label first 10 dimensions
-                color=colors[dim],
-                linewidth=1.5,
-                alpha=0.8
-            )
-        
-        # Highlight true state changes if provided
-        if true_states:
-            # Limit true states to the number of steps we're plotting
-            plot_true_states = true_states[:len(time_steps)]
+                    belief_np = np.array(belief)
+                    if belief_np.ndim > 1:
+                        belief_np = belief_np.flatten()
+                
+                # Store values for each dimension
+                for dim in range(plot_dims):
+                    if dim < len(belief_np):
+                        belief_values[dim].append(belief_np[dim])
+                    else:
+                        belief_values[dim].append(0.0)
             
-            # Create a step function for the true state
-            prev_state = plot_true_states[0]
-            state_changes = [(0, prev_state)]
-            
-            for t, state in enumerate(plot_true_states[1:], 1):
-                if state != prev_state:
-                    state_changes.append((t, state))
-                    prev_state = state
-            
-            # Plot vertical lines at state changes
-            for t, state in state_changes[1:]:  # Skip the first one (initial state)
-                ax.axvline(
-                    x=t,
-                    color='red',
-                    linestyle='--',
-                    alpha=0.5,
-                    label="State Change" if t == state_changes[1][0] else None  # Only label the first one
-                )
-                ax.text(
-                    t, 
-                    ax.get_ylim()[1] * 0.9,
-                    f"→ State {state}",
-                    horizontalalignment='left',
-                    verticalalignment='top',
-                    fontsize=9,
-                    bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
+            # Plot each belief dimension
+            for dim in range(plot_dims):
+                ax.plot(
+                    time_steps, 
+                    belief_values[dim], 
+                    label=f"Dim {dim}" if dim < 10 else None,  # Only label first 10 dimensions
+                    color=colors[dim],
+                    linewidth=1.5,
+                    alpha=0.8
                 )
             
-            # Add initial state label
-            ax.text(
-                0, 
-                ax.get_ylim()[1] * 0.9,
-                f"State {plot_true_states[0]}",
-                horizontalalignment='left',
-                verticalalignment='top',
-                fontsize=9,
-                bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
-            )
-        
-        # Set title and labels
-        ax.set_title(f"Agent {agent_id} Belief State Evolution")
-        ax.set_ylabel("Belief Value")
-        ax.grid(True, linestyle='--', alpha=0.7)
-        
-        # Add legend with limited entries to avoid overcrowding
-        if plot_dims > 10:
-            ax.legend(loc='upper right', ncol=5, fontsize='small')
-        else:
-            ax.legend(loc='upper right', ncol=min(5, plot_dims), fontsize='small')
+            # Highlight true state changes if provided
+            if true_states and start_idx < len(true_states):
+                # Get true states for this episode
+                episode_true_states = true_states[start_idx:min(end_idx, len(true_states))]
+                
+                # Create a step function for the true state
+                if len(episode_true_states) > 0:
+                    prev_state = episode_true_states[0]
+                    state_changes = [(0, prev_state)]
+                    
+                    for t, state in enumerate(episode_true_states[1:], 1):
+                        if state != prev_state:
+                            state_changes.append((t, state))
+                            prev_state = state
+                    
+                    # Plot vertical lines at state changes
+                    for t, state in state_changes[1:]:  # Skip the first one (initial state)
+                        ax.axvline(
+                            x=t,
+                            color='red',
+                            linestyle='--',
+                            alpha=0.5,
+                            label="State Change" if t == state_changes[1][0] else None  # Only label the first one
+                        )
+                        ax.text(
+                            t, 
+                            ax.get_ylim()[1] * 0.9,
+                            f"→ State {state}",
+                            horizontalalignment='left',
+                            verticalalignment='top',
+                            fontsize=9,
+                            bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
+                        )
+                    
+                    # Add initial state label
+                    ax.text(
+                        0, 
+                        ax.get_ylim()[1] * 0.9,
+                        f"State {episode_true_states[0]}",
+                        horizontalalignment='left',
+                        verticalalignment='top',
+                        fontsize=9,
+                        bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2')
+                    )
+            
+            # Set title and labels
+            # Add agent ID to title
+            ax.set_title(f"Agent {agent_id} - Episode {ep+1}")
+            
+            # Set y-label for leftmost plots
+            if grid_col == 0:
+                ax.set_ylabel("Belief Value")
+            
+            ax.grid(True, linestyle='--', alpha=0.7)
+            
+            # Add legend only to the first subplot to avoid clutter
+            if j == 0 and ep == 0:
+                if plot_dims > 10:
+                    ax.legend(loc='upper right', ncol=5, fontsize='small')
+                else:
+                    ax.legend(loc='upper right', ncol=min(5, plot_dims), fontsize='small')
     
-    # Set common x-axis label
-    axes[-1].set_xlabel("Time Steps")
+    # Set common x-axis label for the bottom row
+    for col in range(num_episode_cols):
+        if col < all_axes.shape[1]:  # Make sure column exists
+            all_axes[-1, col].set_xlabel("Time Steps")
     
     plt.tight_layout()
     plt.suptitle(title, fontsize=16, y=1.02)
     
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-    else:
-        plt.show()
-        
-def plot_decision_boundaries(
-    belief_states: Dict[int, List[torch.Tensor]],
-    latent_states: Dict[int, List[torch.Tensor]],
-    action_probs: Dict[int, List[List[float]]],
-    true_states: List[int] = None,
-    title: str = "Decision Boundaries in Internal State Space",
-    save_path: Optional[str] = None,
-    n_components: int = 2,
-    plot_type: str = "both"  # "belief", "latent", or "both"
-) -> None:
-    """
-    Visualize decision boundaries by projecting belief and latent states to 2D/3D using PCA
-    and coloring by action probabilities.
-    
-    Args:
-        belief_states: Dictionary mapping agent IDs to lists of belief state tensors
-        latent_states: Dictionary mapping agent IDs to lists of latent state tensors
-        action_probs: Dictionary mapping agent IDs to lists of action probability distributions
-        true_states: List of true states for each time step
-        title: Title of the plot
-        save_path: Path to save the figure (if None, figure is displayed)
-        n_components: Number of PCA components (2 or 3)
-        plot_type: Which state type to plot ("belief", "latent", or "both")
-    """
-    from sklearn.decomposition import PCA
-    import numpy as np
-    
-    if n_components not in [2, 3]:
-        raise ValueError("n_components must be either 2 or 3")
-    
-    # Determine which plots to create
-    plot_belief = plot_type in ["belief", "both"]
-    plot_latent = plot_type in ["latent", "both"]
-    
-    # Set up the figure
-    if plot_belief and plot_latent:
-        fig = plt.figure(figsize=(18, 8))
-        if n_components == 3:
-            ax1 = fig.add_subplot(121, projection='3d')
-            ax2 = fig.add_subplot(122, projection='3d')
-        else:
-            ax1 = fig.add_subplot(121)
-            ax2 = fig.add_subplot(122)
-    else:
-        fig = plt.figure(figsize=(10, 8))
-        if n_components == 3:
-            ax = fig.add_subplot(111, projection='3d')
-        else:
-            ax = fig.add_subplot(111)
-    
-    # Process each agent
-    for agent_id, belief_sequence in belief_states.items():
-        # Convert tensors to numpy arrays
-        belief_data = np.array([b.cpu().numpy().flatten() for b in belief_sequence])
-        latent_data = np.array([l.cpu().numpy().flatten() for l in latent_states[agent_id]])
-        
-        # Get action probabilities for state 1 (assuming binary state)
-        # This will be used for coloring the points
-        # Make sure we're getting the correct format - action_probs might be a list of lists or numpy arrays
-        probs_state_1 = []
-        for probs in action_probs[agent_id]:
-            if isinstance(probs, (list, np.ndarray)) and len(probs) > 1:
-                # If it's a list/array with multiple elements, take the second one (index 1)
-                probs_state_1.append(float(probs[1]))
-            elif isinstance(probs, (float, np.float32, np.float64)):
-                # If it's already a single value, use it directly
-                probs_state_1.append(float(probs))
-            else:
-                # Default case
-                probs_state_1.append(0.5)
-        
-        # Make sure the length matches the belief/latent data
-        if len(probs_state_1) > len(belief_data):
-            probs_state_1 = probs_state_1[:len(belief_data)]
-        elif len(probs_state_1) < len(belief_data):
-            # Pad with the last value if needed
-            last_val = probs_state_1[-1] if probs_state_1 else 0.5
-            probs_state_1.extend([last_val] * (len(belief_data) - len(probs_state_1)))
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
             
-        probs_state_1 = np.array(probs_state_1)
-        
-        # Apply PCA to reduce dimensionality
-        if plot_belief and len(belief_data) > 0:
-            belief_pca = PCA(n_components=n_components)
-            belief_reduced = belief_pca.fit_transform(belief_data)
-            
-            # Create scatter plot with color based on action probability
-            if plot_belief and plot_latent:
-                ax_belief = ax1
-            else:
-                ax_belief = ax
-                
-            if n_components == 3:
-                scatter = ax_belief.scatter(
-                    belief_reduced[:, 0], 
-                    belief_reduced[:, 1], 
-                    belief_reduced[:, 2],
-                    c=probs_state_1, 
-                    cmap='coolwarm', 
-                    s=30, 
-                    alpha=0.7
-                )
-                ax_belief.set_xlabel('PC1')
-                ax_belief.set_ylabel('PC2')
-                ax_belief.set_zlabel('PC3')
-                ax_belief.set_title(f'Agent {agent_id} Belief State Space\nColored by P(Action=1)')
-            else:
-                scatter = ax_belief.scatter(
-                    belief_reduced[:, 0], 
-                    belief_reduced[:, 1], 
-                    c=probs_state_1, 
-                    cmap='coolwarm', 
-                    s=30, 
-                    alpha=0.7
-                )
-                ax_belief.set_xlabel('PC1')
-                ax_belief.set_ylabel('PC2')
-                ax_belief.set_title(f'Agent {agent_id} Belief State Space\nColored by P(Action=1)')
-                
-                # Add colorbar
-                plt.colorbar(scatter, ax=ax_belief, label='P(Action=1)')
-                
-                # Add decision boundary at 0.5 probability
-                # Find the points closest to 0.5 probability
-                boundary_points = []
-                for i in range(len(probs_state_1)-1):
-                    if (probs_state_1[i] < 0.5 and probs_state_1[i+1] >= 0.5) or \
-                       (probs_state_1[i] >= 0.5 and probs_state_1[i+1] < 0.5):
-                        boundary_points.append((belief_reduced[i], belief_reduced[i+1]))
-                
-                # Draw lines connecting boundary points
-                for p1, p2 in boundary_points:
-                    ax_belief.plot([p1[0], p2[0]], [p1[1], p2[1]], 'k--', alpha=0.5)
-        
-        # Apply PCA to latent states
-        if plot_latent and len(latent_data) > 0:
-            latent_pca = PCA(n_components=n_components)
-            latent_reduced = latent_pca.fit_transform(latent_data)
-            
-            # Make sure the length of probs_state_1 matches the latent data
-            latent_probs_state_1 = probs_state_1
-            if len(latent_probs_state_1) > len(latent_data):
-                latent_probs_state_1 = latent_probs_state_1[:len(latent_data)]
-            elif len(latent_probs_state_1) < len(latent_data):
-                # Pad with the last value if needed
-                last_val = latent_probs_state_1[-1] if latent_probs_state_1.size > 0 else 0.5
-                latent_probs_state_1 = np.append(latent_probs_state_1, [last_val] * (len(latent_data) - len(latent_probs_state_1)))
-            
-            # Create scatter plot with color based on action probability
-            if plot_belief and plot_latent:
-                ax_latent = ax2
-            else:
-                ax_latent = ax
-                
-            if n_components == 3:
-                scatter = ax_latent.scatter(
-                    latent_reduced[:, 0], 
-                    latent_reduced[:, 1], 
-                    latent_reduced[:, 2],
-                    c=latent_probs_state_1, 
-                    cmap='coolwarm', 
-                    s=30, 
-                    alpha=0.7
-                )
-                ax_latent.set_xlabel('PC1')
-                ax_latent.set_ylabel('PC2')
-                ax_latent.set_zlabel('PC3')
-                ax_latent.set_title(f'Agent {agent_id} Latent State Space\nColored by P(Action=1)')
-            else:
-                scatter = ax_latent.scatter(
-                    latent_reduced[:, 0], 
-                    latent_reduced[:, 1], 
-                    c=latent_probs_state_1, 
-                    cmap='coolwarm', 
-                    s=30, 
-                    alpha=0.7
-                )
-                ax_latent.set_xlabel('PC1')
-                ax_latent.set_ylabel('PC2')
-                ax_latent.set_title(f'Agent {agent_id} Latent State Space\nColored by P(Action=1)')
-                
-                # Add colorbar
-                plt.colorbar(scatter, ax=ax_latent, label='P(Action=1)')
-                
-                # Add decision boundary at 0.5 probability
-                # Find the points closest to 0.5 probability
-                boundary_points = []
-                for i in range(len(latent_probs_state_1)-1):
-                    if (latent_probs_state_1[i] < 0.5 and latent_probs_state_1[i+1] >= 0.5) or \
-                       (latent_probs_state_1[i] >= 0.5 and latent_probs_state_1[i+1] < 0.5):
-                        boundary_points.append((latent_reduced[i], latent_reduced[i+1]))
-                
-                # Draw lines connecting boundary points
-                for p1, p2 in boundary_points:
-                    ax_latent.plot([p1[0], p2[0]], [p1[1], p2[1]], 'k--', alpha=0.5)
-    
-    plt.tight_layout()
-    plt.suptitle(title, fontsize=16, y=1.02)
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
+            # Save the figure
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Saved belief states plot to {save_path}")
+            plt.close()
+        except Exception as e:
+            print(f"Error saving plot to {save_path}: {e}")
+            plt.close()
     else:
         plt.show()

@@ -21,11 +21,18 @@ def initialize_metrics(env, args, training):
     # Add training-specific or evaluation-specific metrics
     if training:
         metrics['training_loss'] = []
+        # Add belief and latent state tracking for training if plot_internal_states is enabled
+        if hasattr(args, 'plot_internal_states') and args.plot_internal_states:
+            metrics['belief_states'] = {agent_id: [] for agent_id in range(env.num_agents)}
+            metrics['latent_states'] = {agent_id: [] for agent_id in range(env.num_agents)}
+            metrics['belief_distributions'] = {agent_id: [] for agent_id in range(env.num_agents)}
     else:
         metrics['correct_actions'] = {agent_id: 0 for agent_id in range(env.num_agents)}
         # Add belief and latent state tracking for evaluation
         metrics['belief_states'] = {agent_id: [] for agent_id in range(env.num_agents)}
         metrics['latent_states'] = {agent_id: [] for agent_id in range(env.num_agents)}
+        # Add belief distribution tracking
+        metrics['belief_distributions'] = {agent_id: [] for agent_id in range(env.num_agents)}
     
     print(f"Initialized metrics dictionary with {len(metrics['action_probs'])} agent entries")
     return metrics
@@ -138,9 +145,10 @@ def prepare_serializable_metrics(metrics, learning_rates, theoretical_bounds, nu
         'true_states': metrics['true_states'],
         'learning_rates': {str(k): float(v) for k, v in learning_rates.items()},
         
-        # Add belief and latent states if they exist (only for evaluation)
-        'has_belief_states': not training and 'belief_states' in metrics,
-        'has_latent_states': not training and 'latent_states' in metrics,
+        # Add belief and latent states if they exist
+        'has_belief_states': 'belief_states' in metrics,
+        'has_latent_states': 'latent_states' in metrics,
+        'has_belief_distributions': 'belief_distributions' in metrics,
         'fastest_agent': {
             'id': int(fastest_agent[0]),
             'rate': float(fastest_agent[1])
