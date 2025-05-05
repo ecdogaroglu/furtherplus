@@ -8,7 +8,8 @@ import json
 import time
 from pathlib import Path
 from tqdm import tqdm
-from modules.agent import FURTHERPlusAgent, ReplayBuffer
+from modules.agent import FURTHERPlusAgent
+from modules.replay_buffer import ReplayBuffer
 from modules.utils import encode_observation
 from modules.metrics import (
     initialize_metrics, 
@@ -468,10 +469,10 @@ def update_agent_states(agents, observations, next_observations, actions, reward
             # Infer latent state for next observation
             # This ensures we're using the correct latent state for the next observation
             next_latent = agent.infer_latent(
-                encoded_next_obs,  # Already a numpy array
+                encoded_obs,  
                 {n_id: actions[n_id] for n_id in env.get_neighbors(agent_id) if n_id in actions},
                 rewards[agent_id] if rewards else 0.0,
-                encoded_next_obs  # Using next_obs as both current and next for simplicity
+                encoded_next_obs 
             )
             
             # Get the updated belief state after processing the next observation

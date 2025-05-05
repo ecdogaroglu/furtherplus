@@ -3,7 +3,7 @@ Command-line argument parsing for FURTHER+ experiments.
 """
 
 import argparse
-from modules.agent import get_best_device
+from modules.utils import get_best_device
 
 
 def parse_args():

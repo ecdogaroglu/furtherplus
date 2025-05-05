@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 from typing import Dict, List, Optional, Union
 import networkx as nx
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import os
  
 def encode_observation(
@@ -413,3 +415,109 @@ def plot_belief_distributions(
     else:
         plt.show()
 
+def get_best_device():
+    """Get the best available device (CUDA, MPS, or CPU).
+    
+    For MPS (Apple Silicon), we perform a quick benchmark to ensure it's actually
+    faster than CPU, as there are known issues with MPS in some PyTorch versions.
+    
+    The device can be forced by setting the TORCH_DEVICE environment variable.
+    """
+    import os
+    
+    # Check if device is forced via environment variable
+    forced_device = os.environ.get('TORCH_DEVICE')
+    if forced_device:
+        if forced_device.lower() in ['cuda', 'mps', 'cpu']:
+            print(f"Using device '{forced_device}' from TORCH_DEVICE environment variable")
+            return forced_device.lower()
+        else:
+            print(f"Warning: Invalid TORCH_DEVICE value '{forced_device}'. Must be 'cuda', 'mps', or 'cpu'.")
+    
+    # Auto-select the best device
+    if torch.cuda.is_available():
+        return 'cuda'
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        # Check if MPS is actually faster than CPU with a quick benchmark
+        if is_mps_faster_than_cpu():
+            return 'mps'
+        else:
+            print("MPS available but benchmark shows it's slower than CPU. Using CPU instead.")
+            return 'cpu'
+    else:
+        return 'cpu'
+
+def is_mps_faster_than_cpu(test_size=256, repeat=10):
+    """Run a benchmark to check if MPS is faster than CPU for neural network operations.
+    
+    Args:
+        test_size: Size of test matrices/tensors
+        repeat: Number of times to repeat the test
+        
+    Returns:
+        bool: True if MPS is faster, False otherwise
+    """
+    import time
+    
+    # Skip benchmark if MPS is not available
+    if not (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()):
+        return False
+    
+    # Create a small neural network for testing
+    class TestNetwork(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(test_size, test_size)
+            self.fc2 = nn.Linear(test_size, test_size)
+            self.gru = nn.GRU(test_size, test_size//2, batch_first=True)
+            
+        def forward(self, x):
+            x = F.relu(self.fc1(x))
+            x = F.relu(self.fc2(x))
+            x = x.unsqueeze(1)  # Add sequence dimension for GRU
+            x, _ = self.gru(x)
+            return x
+    
+    # Create input data
+    batch_size = 32
+    input_data = torch.randn(batch_size, test_size)
+    
+    # Test on CPU
+    try:
+        cpu_model = TestNetwork().to('cpu')
+        
+        # Warm-up
+        for _ in range(2):
+            _ = cpu_model(input_data)
+        
+        # Benchmark
+        cpu_start = time.time()
+        for _ in range(repeat):
+            _ = cpu_model(input_data)
+        cpu_time = time.time() - cpu_start
+        
+        # Test on MPS
+        mps_model = TestNetwork().to('mps')
+        mps_input = input_data.to('mps')
+        
+        # Warm-up
+        for _ in range(2):
+            _ = mps_model(mps_input)
+            torch.mps.synchronize()
+        
+        # Benchmark
+        mps_start = time.time()
+        for _ in range(repeat):
+            _ = mps_model(mps_input)
+            torch.mps.synchronize()
+        mps_time = time.time() - mps_start
+        
+        # Compare times (with a small margin to prefer MPS if it's close)
+        print(f"Neural network benchmark - CPU: {cpu_time:.4f}s, MPS: {mps_time:.4f}s")
+        
+        # Only use MPS if it's significantly faster (at least 20% faster)
+        return mps_time < cpu_time * 0.8
+        
+    except Exception as e:
+        print(f"Error during MPS benchmark: {e}")
+        return False
