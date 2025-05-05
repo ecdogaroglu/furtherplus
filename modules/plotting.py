@@ -6,14 +6,23 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from modules.utils import (
     plot_incorrect_action_probabilities,
-    plot_belief_states,
-    plot_belief_distributions,
-    plot_latent_states)
+    plot_belief_distributions
+    )
 from modules.metrics import process_incorrect_probabilities, print_debug_info_for_plotting
 
 
-def generate_plots(metrics, env, args, output_dir, training):
-    """Generate plots from experiment results."""
+def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=None):
+    """
+    Generate plots from experiment results.
+    
+    Args:
+        metrics: Combined metrics dictionary
+        env: Environment object
+        args: Command-line arguments
+        output_dir: Directory to save plots
+        training: Whether this is training or evaluation
+        episodic_metrics: Optional dictionary with episode-separated metrics
+    """
     # Process incorrect probabilities for plotting
     agent_incorrect_probs = process_incorrect_probabilities(metrics, env.num_agents)
     
@@ -34,10 +43,10 @@ def generate_plots(metrics, env, args, output_dir, training):
             save_path=str(output_dir / 'incorrect_action_probs.png'),
             log_scale=False,
             show_learning_rates=True,
-            episode_length=args.horizon  # Pass the episode length to separate episodes
+            episode_length=args.horizon  # Use horizon directly
         )
     
-    # Plot internal states if requested ( if argfor both training and evaluation)
+    # Plot internal states if requested (for both training and evaluation)
     if args.plot_internal_states:
         # Check if we have the necessary data
         has_belief_data = ('belief_states' in metrics and 
@@ -47,7 +56,19 @@ def generate_plots(metrics, env, args, output_dir, training):
         
         if has_belief_data or has_latent_data:
             print(f"Generating internal state plots in {'training' if training else 'evaluation'} mode...")
-            generate_internal_state_plots(metrics, env, args, output_dir)
+            
+            # Use episodic metrics if available, otherwise use combined metrics
+            if episodic_metrics and 'episodes' in episodic_metrics and episodic_metrics['episodes']:
+                print("Using episode-separated metrics for plotting...")
+                for i, episode_metrics in enumerate(episodic_metrics['episodes']):
+                    episode_dir = output_dir / f'episode_{i+1}'
+                    episode_dir.mkdir(exist_ok=True)
+                    generate_internal_state_plots(episode_metrics, env, args, episode_dir, episode_num=i+1)
+                
+                # Also generate combined plots for comparison
+                generate_internal_state_plots(metrics, env, args, output_dir)
+            else:
+                generate_internal_state_plots(metrics, env, args, output_dir)
         else:
             print("No internal state data available for plotting. Make sure you're running in evaluation mode or collecting internal states during training.")
 
@@ -62,51 +83,32 @@ def create_empty_plot(output_dir):
     plt.close()
 
 
-def generate_internal_state_plots(metrics, env, args, output_dir):
-    """Generate plots of internal agent states during evaluation."""
-    # Plot belief states
-    if ('belief_states' in metrics and 
-        any(len(beliefs) > 0 for beliefs in metrics['belief_states'].values()) and 
-        (args.plot_type == 'belief' or args.plot_type == 'both')):
-        
-        plot_belief_states(
-            belief_states=metrics['belief_states'],
-            true_states=metrics['true_states'],
-            num_states=env.num_states,
-            title=f"Belief States Evolution ({args.network_type.capitalize()} Network, {env.num_agents} Agents)",
-            save_path=str(output_dir / 'belief_states.png'),
-            max_steps=min(1000, len(metrics['true_states'])),  # Limit to 1000 steps for readability
-            episode_length=args.horizon  # Pass episode length to separate episodes
-        )
-        print(f"Belief states plot saved to {output_dir / 'belief_states.png'}")
+def generate_internal_state_plots(metrics, env, args, output_dir, episode_num=None):
+    """
+    Generate plots of internal agent states during evaluation.
+    
+    Args:
+        metrics: Dictionary of metrics
+        env: Environment object
+        args: Command-line arguments
+        output_dir: Directory to save plots
+        episode_num: Optional episode number for episode-specific plots
+    """
     
     # Plot belief distributions if available
     if ('belief_distributions' in metrics and 
         any(len(beliefs) > 0 for beliefs in metrics['belief_distributions'].values())):
         
+        # Add episode number to title if provided
+        episode_suffix = f" - Episode {episode_num}" if episode_num is not None else ""
+        
         plot_belief_distributions(
             belief_distributions=metrics['belief_distributions'],
             true_states=metrics['true_states'],
-            title=f"Belief Distributions Evolution ({args.network_type.capitalize()} Network, {env.num_agents} Agents)",
+            title=f"Belief Distributions Evolution ({args.network_type.capitalize()} Network, {env.num_agents} Agents){episode_suffix}",
             save_path=str(output_dir / 'belief_distributions.png'),
-            max_steps=min(1000, len(metrics['true_states'])),  # Limit to 1000 steps for readability
-            episode_length=args.horizon  # Pass episode length to separate episodes
+            episode_length=args.horizon,  # Use horizon directly
+            num_episodes=1 if episode_num is not None else args.num_episodes  # Single episode if episode_num is provided
         )
-        print(f"Belief distributions plot saved to {output_dir / 'belief_distributions.png'}")
     
-    # Plot latent states
-    if ('latent_states' in metrics and 
-        any(len(latents) > 0 for latents in metrics['latent_states'].values()) and 
-        (args.plot_type == 'latent' or args.plot_type == 'both')):
-        
-        plot_latent_states(
-            latent_states=metrics['latent_states'],
-            true_states=metrics['true_states'],
-            num_states=env.num_states,
-            title=f"Latent States Evolution ({args.network_type.capitalize()} Network, {env.num_agents} Agents)",
-            save_path=str(output_dir / 'latent_states.png'),
-            max_steps=min(1000, len(metrics['true_states'])),  # Limit to 1000 steps for readability
-            episode_length=args.horizon  # Pass episode length to separate episodes
-        )
-        print(f"Latent states plot saved to {output_dir / 'latent_states.png'}")
-    
+

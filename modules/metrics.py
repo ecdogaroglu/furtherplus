@@ -168,11 +168,57 @@ def prepare_serializable_metrics(metrics, learning_rates, theoretical_bounds, nu
     return serializable_metrics
 
 
-def save_metrics_to_file(metrics, output_dir, training):
-    """Save metrics to a JSON file."""
-    metrics_file = output_dir / (f'training_metrics.json' if training else 'evaluation_metrics.json')
+def make_json_serializable(obj):
+    """
+    Convert a Python object to a JSON serializable format.
+    
+    Args:
+        obj: Any Python object
+        
+    Returns:
+        JSON serializable version of the object
+    """
+    if isinstance(obj, (np.int32, np.int64)):
+        return int(obj)
+    elif isinstance(obj, (np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return make_json_serializable(obj.tolist())
+    elif isinstance(obj, list):
+        return [make_json_serializable(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {make_json_serializable(key): make_json_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, tuple):
+        return tuple(make_json_serializable(item) for item in obj)
+    elif isinstance(obj, set):
+        return list(make_json_serializable(item) for item in obj)
+    elif hasattr(obj, 'tolist'):  # For torch tensors
+        return make_json_serializable(obj.tolist())
+    elif hasattr(obj, 'item'):  # For scalar tensors
+        return obj.item()
+    else:
+        return obj
+
+
+def save_metrics_to_file(metrics, output_dir, training, filename=None):
+    """
+    Save metrics to a JSON file.
+    
+    Args:
+        metrics: Dictionary of metrics to save
+        output_dir: Directory to save the file in
+        training: Whether this is training or evaluation
+        filename: Optional custom filename (if None, uses default naming)
+    """
+    if filename is None:
+        filename = f'training_metrics.json' if training else 'evaluation_metrics.json'
+    
+    # Convert metrics to JSON serializable format
+    serializable_metrics = make_json_serializable(metrics)
+    
+    metrics_file = output_dir / filename
     with open(metrics_file, 'w') as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(serializable_metrics, f, indent=2)
 
 
 def process_incorrect_probabilities(metrics, num_agents):

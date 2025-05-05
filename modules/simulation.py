@@ -58,8 +58,10 @@ def run_agents(env, args, training=True, model_path=None):
     
     print(f"Running {num_episodes} episode(s) with {args.horizon} steps per episode")
     
-    # Initialize combined metrics to aggregate across episodes
-    combined_metrics = metrics.copy()
+    # Initialize episodic metrics to store each episode separately
+    episodic_metrics = {
+        'episodes': []
+    }
     
     # Episode loop
     for episode in range(num_episodes):
@@ -68,9 +70,8 @@ def run_agents(env, args, training=True, model_path=None):
         setup_random_seeds(episode_seed, env)
         print(f"\nStarting episode {episode+1}/{num_episodes} with seed {episode_seed}")
         
-        # Reset metrics for this episode
-        if episode > 0:
-            metrics = initialize_metrics(env, args, training)
+        # Initialize fresh metrics for this episode
+        metrics = initialize_metrics(env, args, training)
         
         # Run simulation for this episode
         observations, episode_metrics = run_simulation(
@@ -79,15 +80,11 @@ def run_agents(env, args, training=True, model_path=None):
             steps_per_episode=args.horizon
         )
         
-        # Merge episode metrics into combined metrics
-        if episode > 0:
-            for key in combined_metrics:
-                if isinstance(combined_metrics[key], list):
-                    combined_metrics[key].extend(episode_metrics[key])
-                elif isinstance(combined_metrics[key], dict):
-                    for agent_id in combined_metrics[key]:
-                        if isinstance(combined_metrics[key][agent_id], list):
-                            combined_metrics[key][agent_id].extend(episode_metrics[key][agent_id])
+        # Store this episode's metrics separately
+        episodic_metrics['episodes'].append(episode_metrics)
+    
+    # Create a flattened version of metrics for backward compatibility with existing code
+    combined_metrics = flatten_episodic_metrics(episodic_metrics, env.num_agents)
     
     # Process results
     learning_rates = calculate_agent_learning_rates_from_metrics(combined_metrics)
@@ -97,13 +94,24 @@ def run_agents(env, args, training=True, model_path=None):
     serializable_metrics = prepare_serializable_metrics(
         combined_metrics, learning_rates, theoretical_bounds, args.horizon, training
     )
+    
+    # Also save the episodic metrics for more detailed analysis
+    episodic_serializable_metrics = {
+        'episodic_data': episodic_metrics,
+        'learning_rates': learning_rates,
+        'theoretical_bounds': theoretical_bounds,
+        'episode_length': args.horizon,
+        'num_episodes': args.num_episodes
+    }
+    
     save_metrics_to_file(serializable_metrics, output_dir, training)
+    save_metrics_to_file(episodic_serializable_metrics, output_dir, training, filename='episodic_metrics.json')
     
     if training and args.save_model:
         save_final_models(agents, output_dir)
     
     # Generate plots
-    generate_plots(combined_metrics, env, args, output_dir, training)
+    generate_plots(combined_metrics, env, args, output_dir, training, episodic_metrics)
     
     return learning_rates, serializable_metrics
 
@@ -242,7 +250,9 @@ def run_simulation(env, agents, replay_buffers, metrics, args, theoretical_bound
     # Initialize environment and agents
     observations = env.initialize()
     total_rewards = np.zeros(env.num_agents) if training else None
-    metrics['true_states'].append(env.true_state)
+    
+    # Don't add the initial true state here since it will be added in the first update_metrics call
+    # This prevents duplicate recording of the initial state
     
     # Set global metrics for access in other functions
     set_metrics(metrics)
@@ -451,11 +461,21 @@ def update_agent_states(agents, observations, next_observations, actions, reward
         
         # Store transition in replay buffer if training
         if training and agent_id in replay_buffers:
-            # Get current belief and latent states
-            belief = agent.current_belief.detach()
-            latent = agent.current_latent.detach()
-            next_belief = agent.current_belief.detach()  # Current belief is next belief after update
-            next_latent = agent.current_latent.detach()  # Current latent is next latent after update
+            # Get current belief and latent states (before observation update)
+            belief = agent.current_belief.detach().clone()  # Make a copy to ensure we have the pre-update state
+            latent = agent.current_latent.detach().clone()
+            
+            # Infer latent state for next observation
+            # This ensures we're using the correct latent state for the next observation
+            next_latent = agent.infer_latent(
+                encoded_next_obs,  # Already a numpy array
+                {n_id: actions[n_id] for n_id in env.get_neighbors(agent_id) if n_id in actions},
+                rewards[agent_id] if rewards else 0.0,
+                encoded_next_obs  # Using next_obs as both current and next for simplicity
+            )
+            
+            # Get the updated belief state after processing the next observation
+            next_belief = agent.current_belief.detach()  # This is now the updated belief after observe() was called
             
             # Get mean and logvar from inference
             mean, logvar = agent.get_latent_distribution_params()
@@ -491,7 +511,6 @@ def store_transition_in_buffer(buffer, obs, belief, latent, action, reward, next
         belief=belief,
         latent=latent,
         action=action,
-        peer_action=None,  # For backward compatibility
         reward=reward,
         next_observation=next_obs,
         next_belief=next_belief,
@@ -545,3 +564,52 @@ def save_final_models(agents, output_dir):
         agent.save(str(final_model_dir / f'agent_{agent_id}.pt'))
     
     print(f"Saved final models to {final_model_dir}")
+
+
+def flatten_episodic_metrics(episodic_metrics, num_agents):
+    """
+    Flatten episodic metrics into a single combined metrics dictionary for backward compatibility.
+    
+    Args:
+        episodic_metrics: Dictionary with episodes list containing metrics for each episode
+        num_agents: Number of agents in the environment
+        
+    Returns:
+        combined_metrics: Flattened metrics dictionary
+    """
+    if not episodic_metrics['episodes']:
+        return {}  # No episodes to flatten
+        
+    # Initialize combined metrics based on the structure of the first episode
+    first_episode = episodic_metrics['episodes'][0]
+    combined_metrics = {}
+    
+    # Initialize each key in combined_metrics with the appropriate structure
+    for key, value in first_episode.items():
+        if isinstance(value, list):
+            combined_metrics[key] = []
+        elif isinstance(value, dict):
+            combined_metrics[key] = {}
+            for sub_key in value:
+                if isinstance(value[sub_key], list):
+                    combined_metrics[key][sub_key] = []
+                else:
+                    combined_metrics[key][sub_key] = value[sub_key]
+        else:
+            combined_metrics[key] = value
+    
+    # Combine metrics from all episodes
+    for episode_metrics in episodic_metrics['episodes']:
+        for key, value in episode_metrics.items():
+            if isinstance(value, list):
+                combined_metrics[key].extend(value)
+            elif isinstance(value, dict):
+                for sub_key in value:
+                    if isinstance(value[sub_key], list):
+                        if sub_key not in combined_metrics[key]:
+                            combined_metrics[key][sub_key] = []
+                        combined_metrics[key][sub_key].extend(value[sub_key])
+                    elif sub_key not in combined_metrics[key]:
+                        combined_metrics[key][sub_key] = value[sub_key]
+    
+    return combined_metrics

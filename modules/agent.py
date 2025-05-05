@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from collections import deque
+from collections import deque, namedtuple
 
 def get_best_device():
     """Get the best available device (CUDA, MPS, or CPU).
@@ -122,12 +122,10 @@ class ReplayBuffer:
         self.sequence_length = sequence_length
         self.buffer = deque(maxlen=capacity)
         
-    def push(self, observation, belief, latent, action, peer_action, reward, 
+    def push(self, observation, belief, latent, action, reward, 
              next_observation, next_belief, next_latent, mean=None, logvar=None, neighbor_actions=None):
         """Save a transition to the buffer."""
-        # For backward compatibility, we use peer_action if neighbor_actions is None
-        action_to_store = neighbor_actions if neighbor_actions is not None else peer_action
-        transition = (observation, belief, latent, action, action_to_store, reward, 
+        transition = (observation, belief, latent, action, neighbor_actions, reward, 
                     next_observation, next_belief, next_latent, mean, logvar)
         self.buffer.append(transition)
     
@@ -174,7 +172,7 @@ class ReplayBuffer:
             time_step_transitions = [seq[t] for seq in sequences]
             
             # Unpack transitions
-            observations, beliefs, latents, actions, peer_actions, rewards, \
+            observations, beliefs, latents, actions, neighbor_actions, rewards, \
             next_observations, next_beliefs, next_latents, means, logvars = zip(*time_step_transitions)
             
             # Convert to tensors
@@ -198,21 +196,21 @@ class ReplayBuffer:
             latents = torch.cat(latents_list).to(self.device)
             actions = torch.LongTensor(actions).to(self.device)
             
-            # Handle peer_actions which might be None or a dictionary
-            if all(pa is None for pa in peer_actions):
-                # If all peer_actions are None, create a tensor of zeros
-                peer_actions_tensor = torch.zeros(len(actions), dtype=torch.long).to(self.device)
-            elif any(isinstance(pa, dict) for pa in peer_actions):
-                # If any peer_actions are dictionaries (neighbor_actions), create a tensor of zeros
+            # Handle neighbor_actions which might be None or a dictionary
+            if all(na is None for na in neighbor_actions):
+                # If all neighbor_actions are None, create a tensor of zeros
+                neighbor_actions_tensor = torch.zeros(len(actions), dtype=torch.long).to(self.device)
+            elif any(isinstance(na, dict) for na in neighbor_actions):
+                # If any neighbor_actions are dictionaries, create a tensor of zeros
                 # This is a simplification - in a full implementation, we would need to encode all neighbor actions
-                peer_actions_tensor = torch.zeros(len(actions), dtype=torch.long).to(self.device)
+                neighbor_actions_tensor = torch.zeros(len(actions), dtype=torch.long).to(self.device)
             else:
                 # Replace None values with 0 (or another default value)
-                peer_actions_list = [0 if pa is None else pa for pa in peer_actions]
-                peer_actions_tensor = torch.LongTensor(peer_actions_list).to(self.device)
+                neighbor_actions_list = [0 if na is None else na for na in neighbor_actions]
+                neighbor_actions_tensor = torch.LongTensor(neighbor_actions_list).to(self.device)
                 
             # Use the tensor for further processing
-            peer_actions = peer_actions_tensor
+            neighbor_actions = neighbor_actions_tensor
                 
             rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
             next_observations = torch.FloatTensor(np.array(next_observations)).to(self.device)
@@ -223,7 +221,7 @@ class ReplayBuffer:
             means = torch.cat(means_list).to(self.device) if means_list else None
             logvars = torch.cat(logvars_list).to(self.device) if logvars_list else None
             
-            time_step_data = (observations, beliefs, latents, actions, peer_actions, rewards, 
+            time_step_data = (observations, beliefs, latents, actions, neighbor_actions, rewards, 
                             next_observations, next_beliefs, next_latents, means, logvars)
             batch_data.append(time_step_data)
         
@@ -292,7 +290,8 @@ class GRUBeliefProcessor(nn.Module):
             belief_for_head = new_belief.squeeze(0)
             # Pass through linear layer and apply softmax
             logits = self.belief_head(belief_for_head)
-            belief_distribution = F.softmax(logits, dim=-1)
+            temperature = 0.1  # Temperature for softmax
+            belief_distribution = F.softmax(logits/temperature, dim=-1)
         
         return new_belief, belief_distribution
     
@@ -477,10 +476,10 @@ class QNetwork(nn.Module):
         neighbor_actions_one_hot = torch.zeros(batch_size, self.num_agents * self.action_dim, device=self.device)
         
         # If neighbor_actions is provided and not None, encode them
-        if neighbor_actions is not None and not (isinstance(neighbor_actions, torch.Tensor) and torch.all(neighbor_actions == 0)):
-            # If neighbor_actions is a dictionary, convert it to a tensor
+        if neighbor_actions is not None:
+            # If neighbor_actions is a dictionary (for a single batch item)
             if isinstance(neighbor_actions, dict):
-                # Process each neighbor's action
+                # Process each neighbor's action for the first batch item
                 for neighbor_id, action in neighbor_actions.items():
                     if isinstance(neighbor_id, int) and 0 <= neighbor_id < self.num_agents:
                         # Calculate the index for this neighbor's action in the one-hot encoding
@@ -488,18 +487,29 @@ class QNetwork(nn.Module):
                         # Set the corresponding bit to 1
                         if isinstance(action, int) and 0 <= action < self.action_dim:
                             neighbor_actions_one_hot[0, start_idx + action] = 1.0
-            # If neighbor_actions is a tensor, it should be of shape [batch_size, num_neighbors]
+            
+            # If neighbor_actions is a list of dictionaries (for multiple batch items)
+            elif isinstance(neighbor_actions, list) and all(isinstance(na, dict) for na in neighbor_actions):
+                for b, na_dict in enumerate(neighbor_actions):
+                    if b < batch_size:  # Ensure we don't exceed batch size
+                        for neighbor_id, action in na_dict.items():
+                            if isinstance(neighbor_id, int) and 0 <= neighbor_id < self.num_agents:
+                                start_idx = neighbor_id * self.action_dim
+                                if isinstance(action, int) and 0 <= action < self.action_dim:
+                                    neighbor_actions_one_hot[b, start_idx + action] = 1.0
+            
+            # If neighbor_actions is a tensor
             elif isinstance(neighbor_actions, torch.Tensor):
                 if neighbor_actions.dim() == 1:
-                    # Single batch, multiple neighbors
+                    # Single batch, single action per neighbor
                     for i, action in enumerate(neighbor_actions):
                         if i < self.num_agents:
                             action_idx = action.item()
                             if 0 <= action_idx < self.action_dim:
                                 neighbor_actions_one_hot[0, i * self.action_dim + action_idx] = 1.0
                 elif neighbor_actions.dim() == 2:
-                    # Multiple batches, multiple neighbors
-                    for b in range(batch_size):
+                    # Multiple batches, single action per neighbor
+                    for b in range(min(batch_size, neighbor_actions.size(0))):
                         for i, action in enumerate(neighbor_actions[b]):
                             if i < self.num_agents:
                                 action_idx = action.item()
@@ -643,18 +653,20 @@ class FURTHERPlusAgent:
         
         # Optimizers
         self.policy_optimizer = torch.optim.Adam(
-            list(self.policy.parameters()) + list(self.belief_processor.parameters()), 
+            list(self.policy.parameters()), 
             lr=learning_rate
         )
         self.q_optimizer = torch.optim.Adam(
             list(self.q_network1.parameters()) + 
-            list(self.q_network2.parameters()) +
+            list(self.q_network2.parameters()),
+            lr=learning_rate
+        )
+        self.belief_optimizer = torch.optim.Adam(
             list(self.belief_processor.parameters()),
             lr=learning_rate
         )
         self.encoder_optimizer = torch.optim.Adam(
-            list(self.encoder.parameters()) + list(self.decoder.parameters()) + 
-            list(self.belief_processor.parameters()),
+            list(self.encoder.parameters()) + list(self.decoder.parameters()),
             lr=learning_rate
         )
         self.gain_optimizer = torch.optim.Adam([self.gain_parameter], lr=learning_rate)
@@ -709,14 +721,12 @@ class FURTHERPlusAgent:
         
         return self.current_belief, self.current_belief_distribution
         
-    def store_transition(self, observation, belief, latent, action, peer_action, reward, 
+    def store_transition(self, observation, belief, latent, action, reward, 
                          next_observation, next_belief, next_latent, mean=None, logvar=None, neighbor_actions=None):
         """Store a transition in the replay buffer."""
-        # For backward compatibility, we still accept peer_action but prefer neighbor_actions if provided
-        action_to_store = neighbor_actions if neighbor_actions is not None else peer_action
         self.replay_buffer.push(
-            observation, belief, latent, action, action_to_store, reward,
-            next_observation, next_belief, next_latent, mean, logvar
+            observation, belief, latent, action, reward,
+            next_observation, next_belief, next_latent, mean, logvar, neighbor_actions
         )
         
     def reset_internal_state(self):
@@ -789,7 +799,17 @@ class FURTHERPlusAgent:
         pass
     
     def infer_latent(self, observation, actions, reward, next_observation):
-        """Infer latent state of peer agent."""
+        """Infer latent state of peer agent.
+        
+        Args:
+            observation: Current observation
+            actions: Dictionary of actions for each neighbor or a single action
+            reward: Reward received
+            next_observation: Next observation
+            
+        Returns:
+            new_latent: The inferred latent state
+        """
         # Convert to tensors
         observation_tensor = torch.FloatTensor(observation).to(self.device)
         if observation_tensor.dim() == 1:
@@ -804,11 +824,21 @@ class FURTHERPlusAgent:
             # Convert dictionary of actions to a list in agent ID order
             actions_list = [actions.get(i, 0) for i in range(self.num_agents)]
             actions_tensor = torch.tensor([actions_list], dtype=torch.long).to(self.device)
+        elif isinstance(actions, (list, tuple)):
+            # List of actions
+            actions_tensor = torch.tensor([actions], dtype=torch.long).to(self.device)
         else:
             # Single action value
             actions_tensor = torch.tensor([[actions]], dtype=torch.long).to(self.device)
             
-        reward_tensor = torch.tensor([[reward]], dtype=torch.float32).to(self.device)
+        # Convert reward to tensor
+        if isinstance(reward, (int, float)):
+            reward_tensor = torch.tensor([[reward]], dtype=torch.float32).to(self.device)
+        else:
+            # Handle case where reward might be a numpy array or tensor
+            reward_tensor = torch.FloatTensor([reward]).to(self.device)
+            if reward_tensor.dim() == 1:
+                reward_tensor = reward_tensor.unsqueeze(1)
         
         # Get latent distribution
         mean, logvar = self.encoder(
@@ -829,7 +859,7 @@ class FURTHERPlusAgent:
         self.current_mean = mean
         self.current_logvar = logvar
         
-        return new_latent, mean, logvar
+        return new_latent
     
     def select_action(self):
         """Select action based on current belief and latent."""
@@ -862,6 +892,7 @@ class FURTHERPlusAgent:
         total_inference_loss = 0
         total_critic_loss = 0
         total_policy_loss = 0
+        total_belief_loss = 0
         
         # Process each time step in the sequence
         for t, batch in enumerate(batch_sequences):
@@ -875,12 +906,28 @@ class FURTHERPlusAgent:
                 means, logvars = None, None
             
             # Update encoder-decoder (inference module)
-            inference_loss = self._update_inference(
+            inference_result = self._update_inference(
                 observations, beliefs, latents, actions, neighbor_actions, 
                 rewards, next_observations, next_beliefs, next_latents,
                 means, logvars
             )
+            inference_loss = inference_result[0]  # First element is the loss value
             total_inference_loss += inference_loss
+            
+            # Update policy
+            policy_result = self._update_policy(beliefs, latents, neighbor_actions)
+            policy_loss = policy_result[0]  # First element is the loss value
+            total_policy_loss += policy_loss
+            
+            # Update belief processor (GRU) using only policy components
+            belief_loss = self._update_belief_processor(
+                observations, beliefs, latents, actions, neighbor_actions, 
+                rewards, next_observations, next_beliefs, next_latents,
+                means, logvars,
+                policy_components=policy_result,
+                inference_components=None  # Not using inference components
+            )
+            total_belief_loss += belief_loss
             
             # Update Q-networks
             critic_loss = self._update_critics(
@@ -888,10 +935,6 @@ class FURTHERPlusAgent:
                 rewards, next_observations, next_beliefs, next_latents
             )
             total_critic_loss += critic_loss
-            
-            # Update policy
-            policy_loss = self._update_policy(beliefs, latents, neighbor_actions)
-            total_policy_loss += policy_loss
         
         # Update target networks once per sequence
         self._update_targets()
@@ -901,7 +944,8 @@ class FURTHERPlusAgent:
         return {
             'inference_loss': total_inference_loss / sequence_length,
             'critic_loss': total_critic_loss / sequence_length,
-            'policy_loss': total_policy_loss / sequence_length
+            'policy_loss': total_policy_loss / sequence_length,
+            'belief_loss': total_belief_loss / sequence_length
         }
         
     def train(self, batch_size=32, sequence_length=8):
@@ -925,7 +969,12 @@ class FURTHERPlusAgent:
     
     def _update_inference(self, observations, beliefs, latents, actions, neighbor_actions, 
                          rewards, next_observations, next_beliefs, next_latents, means=None, logvars=None):
-        """Update inference module (encoder-decoder)."""
+        """Update inference module (encoder-decoder).
+        
+        Returns:
+            tuple: (inference_loss_value, recon_loss, kl_loss, neighbor_action_logits)
+                  The components needed for belief processor training
+        """
         # Use the latents that were already calculated during inference
         # instead of recalculating them here
         
@@ -962,7 +1011,86 @@ class FURTHERPlusAgent:
         inference_loss.backward()
         self.encoder_optimizer.step()
         
-        return inference_loss.item()
+        # Return the loss value and components needed for belief processor training
+        return inference_loss.item(), recon_loss, kl_loss, neighbor_action_logits
+    
+    def _update_belief_processor(self, observations, beliefs, latents, actions, neighbor_actions, 
+                             rewards, next_observations, next_beliefs, next_latents, means=None, logvars=None,
+                             policy_components=None, inference_components=None):
+        """Update belief processor (GRU) network using only policy loss.
+        
+        Args:
+            observations, beliefs, etc.: Standard inputs
+            policy_components: Optional tuple of components from _update_policy
+            inference_components: Not used, kept for API compatibility
+        
+        Returns:
+            float: The belief processor loss value
+        """
+        # Step 1: Process the current observation to get updated beliefs
+        # Reshape observations to have a sequence dimension for the GRU
+        batch_size = observations.size(0)
+        observations_seq = observations.unsqueeze(1)  # [batch_size, 1, obs_dim]
+        
+        # Reshape beliefs to [1, batch_size, belief_dim] for GRU input
+        # We detach to avoid backpropagating through previous time steps
+        beliefs_reshaped = beliefs.detach().unsqueeze(0)
+        
+        # Forward pass through the belief processor
+        updated_belief_seq, _ = self.belief_processor.gru(observations_seq, beliefs_reshaped)
+        updated_belief = updated_belief_seq.squeeze(1)  # [batch_size, belief_dim]
+        
+        # Step 2: Compute policy loss using the updated beliefs
+        if policy_components is not None:
+            # Use the provided policy components
+            _, _, _, _, entropy, expected_q = policy_components
+            
+            # Recompute action probabilities with updated beliefs
+            action_logits = self.policy(updated_belief, latents)
+            action_probs = F.softmax(action_logits, dim=1)
+            log_probs = F.log_softmax(action_logits, dim=1)
+            
+            # Compute entropy with the new probabilities
+            new_entropy = -torch.sum(action_probs * log_probs, dim=1, keepdim=True)
+            
+            # Get Q-values (detached to only train the belief processor)
+            with torch.no_grad():
+                q1 = self.q_network1(updated_belief, latents, neighbor_actions)
+                q2 = self.q_network2(updated_belief, latents, neighbor_actions)
+                q = torch.min(q1, q2)
+            
+            # Compute expected Q-value with the new probabilities
+            new_expected_q = torch.sum(action_probs * q, dim=1, keepdim=True)
+            
+            # Policy loss (negative because we want to maximize it)
+            belief_loss = -(new_expected_q + self.entropy_weight * new_entropy).mean()
+        else:
+            # Compute policy components from scratch
+            action_logits = self.policy(updated_belief, latents)
+            action_probs = F.softmax(action_logits, dim=1)
+            log_probs = F.log_softmax(action_logits, dim=1)
+            
+            # Compute entropy
+            entropy = -torch.sum(action_probs * log_probs, dim=1, keepdim=True)
+            
+            # Get Q-values (detached to only train the belief processor)
+            with torch.no_grad():
+                q1 = self.q_network1(updated_belief, latents, neighbor_actions)
+                q2 = self.q_network2(updated_belief, latents, neighbor_actions)
+                q = torch.min(q1, q2)
+            
+            # Compute expected Q-value
+            expected_q = torch.sum(action_probs * q, dim=1, keepdim=True)
+            
+            # Policy loss (negative because we want to maximize it)
+            belief_loss = -(expected_q + self.entropy_weight * entropy).mean()
+        
+        # Update belief processor
+        self.belief_optimizer.zero_grad()
+        belief_loss.backward()
+        self.belief_optimizer.step()
+        
+        return belief_loss.item()
     
     def _update_critics(self, observations, beliefs, latents, actions, neighbor_actions, 
                         rewards, next_observations, next_beliefs, next_latents):
@@ -978,8 +1106,20 @@ class FURTHERPlusAgent:
             next_log_probs = F.log_softmax(next_action_logits, dim=1)
             entropy = -torch.sum(next_action_probs * next_log_probs, dim=1, keepdim=True)
             
-            # Compute expected Q-values
-            next_neighbor_actions = neighbor_actions  # Simplified, ideally predict next neighbor actions
+            # Predict next neighbor actions using the decoder
+            # First, get the predicted action logits for all agents
+            next_neighbor_logits = self.decoder(next_observations, next_latents)
+            
+            # Convert logits to probabilities
+            next_neighbor_probs = F.softmax(next_neighbor_logits, dim=1)
+            
+            # Get the most likely action for each agent
+            _, predicted_actions = torch.max(next_neighbor_probs, dim=1)
+            
+            # Use these predicted actions as the next neighbor actions
+            next_neighbor_actions = predicted_actions
+            
+            # Compute Q-values with predicted next neighbor actions
             next_q1 = self.target_q_network1(next_beliefs, next_latents, next_neighbor_actions)
             next_q2 = self.target_q_network2(next_beliefs, next_latents, next_neighbor_actions)
             
@@ -1017,7 +1157,12 @@ class FURTHERPlusAgent:
         return q_loss.item()
     
     def _update_policy(self, beliefs, latents, neighbor_actions):
-        """Update policy network."""
+        """Update policy network.
+        
+        Returns:
+            tuple: (policy_loss_value, action_logits, action_probs, log_probs, entropy, expected_q)
+                  The components needed for belief processor training
+        """
         # Get action probabilities
         action_logits = self.policy(beliefs, latents)
         action_probs = F.softmax(action_logits, dim=1)
@@ -1043,7 +1188,8 @@ class FURTHERPlusAgent:
         policy_loss.backward()
         self.policy_optimizer.step()
         
-        return policy_loss.item()
+        # Return the loss value and components needed for belief processor training
+        return policy_loss.item(), action_logits, action_probs, log_probs, entropy, expected_q
     
     def _update_targets(self):
         """Update target networks."""
