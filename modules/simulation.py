@@ -18,11 +18,9 @@ from modules.utils import (
     save_checkpoint_models,
     set_metrics,
     reset_agent_internal_states,
-    initialize_agent_belief_states,
     update_total_rewards,
     select_agent_actions,
     update_progress_display,
-    get_neighbor_actions,
     store_transition_in_buffer,
     load_agent_models)
 from modules.metrics import (
@@ -66,7 +64,7 @@ def run_agents(env, args, training=True, model_path=None):
     
     # Write configuration if training
     if training:
-        replay_buffers = initialize_replay_buffers(agents, args, obs_dim, training)
+        replay_buffers = initialize_replay_buffers(agents, args, obs_dim)
         write_config_file(args, env, theoretical_bounds, output_dir)
 
 
@@ -141,16 +139,12 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
     
     # Print the true state
     print(f"True state for this episode: {env.true_state}")
-    
-    # Don't add the initial true state here since it will be added in the first update_metrics call
-    # This prevents duplicate recording of the initial state
-    
+        
     # Set global metrics for access in other functions
     set_metrics(metrics)
     
     # Reset and initialize agent internal states
     reset_agent_internal_states(agents)
-    initialize_agent_belief_states(agents, observations, env)
     
     # Main simulation loop
     steps_iterator = tqdm(range(args.horizon), desc="Training" if training else "Evaluating")
@@ -170,6 +164,7 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
             agents, observations, next_observations, actions, rewards, 
             replay_buffers, metrics, env, args, training, step
         )
+        print(f"Step {step} - Observations: {observations}, next Observations: {next_observations}, Actions: {actions}, Rewards: {rewards}")
         
         # Update observations for next step
         observations = next_observations
@@ -205,78 +200,54 @@ def update_agent_states(agents, observations, next_observations, actions, reward
         next_obs_data = next_observations[agent_id]
         
         # Extract signals from observations
-        if isinstance(obs_data, dict) and 'signal' in obs_data:
-            obs = obs_data['signal']
-            if hasattr(obs, 'item'):  # Handle numpy scalar
-                obs = obs.item()
-        else:
-            obs = obs_data
-            if not isinstance(obs, int) and hasattr(obs, 'item'):
-                obs = obs.item()
-                
-        if isinstance(next_obs_data, dict) and 'signal' in next_obs_data:
-            next_obs = next_obs_data['signal']
-            if hasattr(next_obs, 'item'):  # Handle numpy scalar
-                next_obs = next_obs.item()
-        else:
-            next_obs = next_obs_data
-            if not isinstance(next_obs, int) and hasattr(next_obs, 'item'):
-                next_obs = next_obs.item()
+        signal = obs_data['signal']
+        next_signal = next_obs_data['signal']
         
         # Get neighbor actions from the observation
-        if isinstance(next_obs_data, dict) and 'neighbor_actions' in next_obs_data:
-            neighbor_actions = next_obs_data['neighbor_actions']
-            if neighbor_actions is None:
-                neighbor_actions = {}
-        else:
-            # Fallback to computing neighbor actions from all actions
-            neighbor_actions = get_neighbor_actions(actions, agent_id, env)
-        
+        neighbor_actions = obs_data['neighbor_actions']
+        next_neighbor_actions = next_obs_data['neighbor_actions']
+
         # Encode observations
         encoded_obs = encode_observation(
-            signal=obs,
-            neighbor_actions={},  # No neighbor actions for the current observation
+            signal=signal,
+            neighbor_actions=neighbor_actions,
             num_agents=env.num_agents,
             num_states=env.num_states
         )
         encoded_next_obs = encode_observation(
-            signal=next_obs,
-            neighbor_actions={n_id: actions[n_id] for n_id in env.get_neighbors(agent_id) if n_id in actions},
+            signal=next_signal,
+            neighbor_actions=next_neighbor_actions,
             num_agents=env.num_agents,
             num_states=env.num_states
         )
-        
+        signal_one_hot = np.zeros(env.num_states)
+        signal_one_hot[signal] = 1.0
         # Update agent belief state
-        agent.observe(encoded_next_obs)
+        _, dstr = agent.observe(signal_one_hot)
+        print(f"Step {step}: Agent {agent_id} observed signal {signal} resulting in belief distribution {dstr.tolist()}")
         
         # Print belief distributions after each step
         if step < 3:  # Only print for the first few steps to avoid too much output
             belief_dist = agent.get_belief_distribution()
-            if belief_dist is not None:
-                print(f"Step {step}, Agent {agent_id} belief distribution: {belief_dist.detach().cpu().numpy()}")
+            print(f"Step {step}, Agent {agent_id} belief distribution: {belief_dist.detach().cpu().numpy()}")
             
             opponent_belief_dist = agent.get_opponent_belief_distribution()
-            if opponent_belief_dist is not None:
-                print(f"Step {step}, Agent {agent_id} opponent belief distribution: {opponent_belief_dist.detach().cpu().numpy()}")
+            print(f"Step {step}, Agent {agent_id} opponent belief distribution: {opponent_belief_dist.detach().cpu().numpy()}")
         
         # Store internal states for visualization if requested (for both training and evaluation)
         if args.plot_internal_states and 'belief_states' in metrics:
             current_belief = agent.get_belief_state()
             current_latent = agent.get_latent_state()
-            if current_belief is not None:
-                metrics['belief_states'][agent_id].append(current_belief.detach().cpu().numpy())
-            if current_latent is not None:
-                metrics['latent_states'][agent_id].append(current_latent.detach().cpu().numpy())
+            metrics['belief_states'][agent_id].append(current_belief.detach().cpu().numpy())
+            metrics['latent_states'][agent_id].append(current_latent.detach().cpu().numpy())
             
             # Store belief distribution if available
             belief_distribution = agent.get_belief_distribution()
-            if belief_distribution is not None:
-                metrics['belief_distributions'][agent_id].append(belief_distribution.detach().cpu().numpy())
+            metrics['belief_distributions'][agent_id].append(belief_distribution.detach().cpu().numpy())
                 
             # Store opponent belief distribution if available
             opponent_belief_distribution = agent.get_opponent_belief_distribution()
-            if opponent_belief_distribution is not None and 'opponent_belief_distributions' in metrics:
-                metrics['opponent_belief_distributions'][agent_id].append(opponent_belief_distribution.detach().cpu().numpy())
+            metrics['opponent_belief_distributions'][agent_id].append(opponent_belief_distribution.detach().cpu().numpy())
         
         # Store transition in replay buffer if training
         if training and agent_id in replay_buffers:
@@ -318,8 +289,7 @@ def update_agent_states(agents, observations, next_observations, actions, reward
             # Update networks if enough samples
             if len(replay_buffers[agent_id]) > args.batch_size and step % args.update_interval == 0:
                 batch = replay_buffers[agent_id].sample(args.batch_size)
-                if batch is not None:
-                    agent.update(batch)
+                agent.update(batch)
 
 def initialize_agents(env, args, obs_dim):
     """Initialize FURTHER+ agents."""
@@ -330,6 +300,7 @@ def initialize_agents(env, args, obs_dim):
         agents[agent_id] = FURTHERPlusAgent(
             agent_id=agent_id,
             num_agents=env.num_agents,
+            num_states=env.num_states,
             observation_dim=obs_dim,
             action_dim=env.num_states,
             hidden_dim=args.hidden_dim,

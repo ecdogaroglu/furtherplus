@@ -43,7 +43,7 @@ class GRUBeliefProcessor(nn.Module):
         
         # Add sequence dimension
         observation = observation.unsqueeze(1)
-        
+        print(f"Observation: {observation.tolist()}")
         # Ensure current_belief has correct dimensions [num_layers=1, batch_size, hidden_dim]
         if current_belief.dim() == 2:
             current_belief = current_belief.unsqueeze(0)
@@ -58,7 +58,7 @@ class GRUBeliefProcessor(nn.Module):
         logits = self.belief_head(belief_for_head)
         temperature = 0.1  # Temperature for softmax
         belief_distribution = F.softmax(logits/temperature, dim=-1)
-        
+        print(f"Belief Distribution: {belief_distribution.tolist()}")
         return new_belief, belief_distribution
     
 class EncoderNetwork(nn.Module):

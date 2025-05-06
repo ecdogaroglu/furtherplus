@@ -13,6 +13,7 @@ class FURTHERPlusAgent:
         self,
         agent_id,
         num_agents,
+        num_states,
         observation_dim,
         action_dim,
         hidden_dim=64,
@@ -33,6 +34,7 @@ class FURTHERPlusAgent:
         print(f"Using device: {device}")
         self.agent_id = agent_id
         self.num_agents = num_agents
+        self.num_states = num_states
         self.observation_dim = observation_dim
         self.action_dim = action_dim
         self.device = device
@@ -58,11 +60,11 @@ class FURTHERPlusAgent:
         
         # Initialize networks
         self.belief_processor = GRUBeliefProcessor(
-            input_dim=observation_dim,
+            input_dim=num_states,
             hidden_dim=belief_dim,
             action_dim=action_dim,
             device=device,
-            num_belief_states=num_agents  # Use num_agents as the number of belief states
+            num_belief_states=num_states  
         ).to(device)
         
         self.encoder = EncoderNetwork(
@@ -72,7 +74,7 @@ class FURTHERPlusAgent:
             hidden_dim=hidden_dim,
             num_agents=num_agents,
             device=device,
-            num_belief_states=num_agents  # Use num_agents as the number of belief states
+            num_belief_states=num_states
         ).to(device)
         
         self.decoder = DecoderNetwork(
@@ -222,14 +224,11 @@ class FURTHERPlusAgent:
         self.current_mean = torch.zeros(1, self.encoder.fc_mean.out_features, device=self.device)
         self.current_logvar = torch.zeros(1, self.encoder.fc_logvar.out_features, device=self.device)
         
-        # Reset belief distribution if it exists
-        if self.belief_processor.belief_head is not None:
-            num_belief_states = self.belief_processor.num_belief_states
-            self.current_belief_distribution = torch.ones(1, num_belief_states, device=self.device) / num_belief_states
+        # Reset belief distribution 
+        self.current_belief_distribution = torch.ones(1, self.belief_processor.num_belief_states, device=self.device) / self.belief_processor.num_belief_states
         
-        # Reset opponent belief distribution if it exists
-        if hasattr(self.encoder, 'opponent_belief_head') and self.encoder.opponent_belief_head is not None:
-            self.current_opponent_belief_distribution = torch.ones(1, self.num_agents, device=self.device) / self.num_agents
+        # Reset opponent belief distribution 
+        self.current_opponent_belief_distribution = torch.ones(1, self.num_agents, device=self.device) / self.num_agents
         
         # Reset cached values to force recalculation
         self.action_logits = None

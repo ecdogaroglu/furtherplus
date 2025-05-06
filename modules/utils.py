@@ -29,7 +29,6 @@ def encode_observation(
     # One-hot encode the signal
     signal_one_hot = np.zeros(num_states)
     signal_one_hot[signal] = 1.0
-    
     # Encode neighbor actions (one-hot per neighbor)
     action_encoding = np.zeros(num_agents * num_states)
     
@@ -42,6 +41,7 @@ def encode_observation(
     
     # Concatenate signal and action encodings
     encoded_obs = np.concatenate([signal_one_hot, action_encoding])
+
     
     return encoded_obs
 
@@ -320,56 +320,6 @@ def set_metrics(metrics):
     """Set the global metrics dictionary."""
     global _metrics
     _metrics = metrics
-
-def initialize_agent_belief_states(agents, observations, env):
-    """Initialize agent belief states based on initial observations."""
-    for agent_id, agent in agents.items():
-        # Encode observation for the agent
-        obs_data = observations[agent_id]
-        print(f"First signal for agent {agent_id} received: {obs_data['signal']}")
-        # Extract signal from observation
-        if isinstance(obs_data, dict) and 'signal' in obs_data:
-            signal = obs_data['signal']
-            if hasattr(signal, 'item'):  # Handle numpy scalar
-                signal = signal.item()
-            if 'neighbor_actions' in obs_data:
-                neighbor_actions = obs_data['neighbor_actions']
-            else:
-                neighbor_actions = {}  # No neighbor actions initially
-            
-        encoded_obs = encode_observation(
-            signal=signal,
-            neighbor_actions=neighbor_actions,
-            num_agents=env.num_agents,
-            num_states=env.num_states
-        )
-        
-        # Initialize belief state
-        agent.observe(encoded_obs)
-        
-        # Print belief distributions
-        belief_dist = agent.get_belief_distribution()
-        if belief_dist is not None:
-            print(f"Agent {agent_id} belief distribution: {belief_dist.detach().cpu().numpy()}")
-        
-        # Print opponent belief distributions
-        opponent_belief_dist = agent.get_opponent_belief_distribution()
-        if opponent_belief_dist is not None:
-            print(f"Agent {agent_id} opponent belief distribution: {opponent_belief_dist.detach().cpu().numpy()}")
-        
-        # Store initial belief states for visualization if evaluating
-        if not hasattr(agent, 'training') or not agent.training:
-            metrics = get_metrics()
-            if 'belief_states' in metrics and agent_id in metrics['belief_states']:
-                current_belief = agent.get_belief_state()
-                if current_belief is not None:
-                    metrics['belief_states'][agent_id].append(current_belief.detach().cpu().numpy())
-            
-            # Get belief distribution using the method
-            agent_belief_distribution = agent.get_belief_distribution()
-            if 'belief_distributions' in metrics and agent_id in metrics['belief_distributions'] and agent_belief_distribution is not None:
-                metrics['belief_distributions'][agent_id].append(agent_belief_distribution.detach().cpu().numpy())
-
 
 def select_agent_actions(agents, metrics):
     """Select actions for all agents and return with probabilities."""
