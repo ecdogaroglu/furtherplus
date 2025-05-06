@@ -459,6 +459,11 @@ def update_agent_states(agents, observations, next_observations, actions, reward
             belief_distribution = agent.get_belief_distribution()
             if belief_distribution is not None:
                 metrics['belief_distributions'][agent_id].append(belief_distribution.detach().cpu().numpy())
+                
+            # Store opponent belief distribution if available
+            opponent_belief_distribution = agent.get_opponent_belief_distribution()
+            if opponent_belief_distribution is not None and 'opponent_belief_distributions' in metrics:
+                metrics['opponent_belief_distributions'][agent_id].append(opponent_belief_distribution.detach().cpu().numpy())
         
         # Store transition in replay buffer if training
         if training and agent_id in replay_buffers:

@@ -26,6 +26,7 @@ def initialize_metrics(env, args, training):
             metrics['belief_states'] = {agent_id: [] for agent_id in range(env.num_agents)}
             metrics['latent_states'] = {agent_id: [] for agent_id in range(env.num_agents)}
             metrics['belief_distributions'] = {agent_id: [] for agent_id in range(env.num_agents)}
+            metrics['opponent_belief_distributions'] = {agent_id: [] for agent_id in range(env.num_agents)}
     else:
         metrics['correct_actions'] = {agent_id: 0 for agent_id in range(env.num_agents)}
         # Add belief and latent state tracking for evaluation
@@ -33,6 +34,7 @@ def initialize_metrics(env, args, training):
         metrics['latent_states'] = {agent_id: [] for agent_id in range(env.num_agents)}
         # Add belief distribution tracking
         metrics['belief_distributions'] = {agent_id: [] for agent_id in range(env.num_agents)}
+        metrics['opponent_belief_distributions'] = {agent_id: [] for agent_id in range(env.num_agents)}
     
     print(f"Initialized metrics dictionary with {len(metrics['action_probs'])} agent entries")
     return metrics

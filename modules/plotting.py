@@ -111,4 +111,20 @@ def generate_internal_state_plots(metrics, env, args, output_dir, episode_num=No
             num_episodes=1 if episode_num is not None else args.num_episodes  # Single episode if episode_num is provided
         )
     
+    # Plot opponent belief distributions if available
+    if ('opponent_belief_distributions' in metrics and 
+        any(len(beliefs) > 0 for beliefs in metrics['opponent_belief_distributions'].values())):
+        
+        # Add episode number to title if provided
+        episode_suffix = f" - Episode {episode_num}" if episode_num is not None else ""
+        
+        plot_belief_distributions(
+            belief_distributions=metrics['opponent_belief_distributions'],
+            true_states=metrics['true_states'],
+            title=f"Opponent Belief Distributions Evolution ({args.network_type.capitalize()} Network, {env.num_agents} Agents){episode_suffix}",
+            save_path=str(output_dir / 'opponent_belief_distributions.png'),
+            episode_length=args.horizon,  # Use horizon directly
+            num_episodes=1 if episode_num is not None else args.num_episodes  # Single episode if episode_num is provided
+        )
+    
 

@@ -71,7 +71,8 @@ class FURTHERPlusAgent:
             latent_dim=latent_dim,
             hidden_dim=hidden_dim,
             num_agents=num_agents,
-            device=device
+            device=device,
+            num_belief_states=num_agents  # Use num_agents as the number of belief states
         ).to(device)
         
         self.decoder = DecoderNetwork(
@@ -160,7 +161,10 @@ class FURTHERPlusAgent:
         self.current_logvar = torch.randn(1, latent_dim, device=device) * 0.01
         
         # Initialize belief distribution
-        self.current_belief_distribution = torch.ones(1, observation_dim, device=device) / observation_dim
+        self.current_belief_distribution = torch.ones(1, self.belief_processor.num_belief_states, device=device) / self.belief_processor.num_belief_states
+        
+        # Initialize opponent belief distribution
+        self.current_opponent_belief_distribution = torch.ones(1, self.num_agents, device=device) / self.num_agents
 
         # For tracking learning metrics
         self.action_probs_history = []
@@ -223,6 +227,10 @@ class FURTHERPlusAgent:
             num_belief_states = self.belief_processor.num_belief_states
             self.current_belief_distribution = torch.ones(1, num_belief_states, device=self.device) / num_belief_states
         
+        # Reset opponent belief distribution if it exists
+        if hasattr(self.encoder, 'opponent_belief_head') and self.encoder.opponent_belief_head is not None:
+            self.current_opponent_belief_distribution = torch.ones(1, self.num_agents, device=self.device) / self.num_agents
+        
         # Reset cached values to force recalculation
         self.action_logits = None
         self.neighbor_action_logits = None
@@ -242,6 +250,8 @@ class FURTHERPlusAgent:
         self.current_logvar = self.current_logvar.detach()
         if self.current_belief_distribution is not None:
             self.current_belief_distribution = self.current_belief_distribution.detach()
+        if hasattr(self, 'current_opponent_belief_distribution') and self.current_opponent_belief_distribution is not None:
+            self.current_opponent_belief_distribution = self.current_opponent_belief_distribution.detach()
         
         # Also reset any cached states in the GRU
         for name, param in self.belief_processor.gru.named_parameters():
@@ -276,8 +286,8 @@ class FURTHERPlusAgent:
         # Convert reward to tensor
         reward_tensor = torch.tensor([[reward]], dtype=torch.float32).to(self.device)
 
-        # Get latent distribution
-        mean, logvar = self.encoder(
+        # Get latent distribution and opponent belief distribution
+        mean, logvar, opponent_belief_distribution = self.encoder(
             observation_tensor,
             actions_tensor,
             reward_tensor,
@@ -290,10 +300,11 @@ class FURTHERPlusAgent:
         eps = torch.randn_like(std).to(self.device)
         new_latent = mean + eps * std
         
-        # Store the current latent, mean, and logvar
+        # Store the current latent, mean, logvar, and opponent belief distribution
         self.current_latent = new_latent
         self.current_mean = mean
         self.current_logvar = logvar
+        self.current_opponent_belief_distribution = opponent_belief_distribution
         
         # Compute neighbor action logits using the decoder
         # This ensures they're available for both training and inference
@@ -322,6 +333,25 @@ class FURTHERPlusAgent:
         action = dist.sample().item()
         
         return action, action_probs.squeeze(0).detach().cpu().numpy()
+    
+    def train(self, batch_size=32, sequence_length=32):
+        """Train the agent using sequential data from the replay buffer.
+        
+        This method ensures belief states are processed sequentially for each trajectory,
+        not just as independent samples.
+        
+        Args:
+            batch_size: Number of sequences to sample
+            sequence_length: Length of each sequence
+            
+        Returns:
+            Dictionary of losses
+        """
+        # Sample sequential data from the replay buffer
+        batch_sequences = self.replay_buffer.sample(batch_size, sequence_length)
+        
+        # Update networks using sequential data
+        return self.update(batch_sequences)
     
     def update(self, batch_sequences):
         """Update all networks using sequential data.
@@ -357,7 +387,6 @@ class FURTHERPlusAgent:
             # Update policy
             policy_result = self._update_policy(beliefs, latents, neighbor_actions)
             policy_loss_value = policy_result[0]  # First element is the loss value
-            policy_loss_tensor = policy_result[1]  # Second element is the loss tensor
             total_policy_loss += policy_loss_value
             
             # Update Q-networks
@@ -378,25 +407,6 @@ class FURTHERPlusAgent:
             'policy_loss': total_policy_loss / sequence_length,
             'belief_loss': total_belief_loss / sequence_length
         }
-        
-    def train(self, batch_size=32, sequence_length=32):
-        """Train the agent using sequential data from the replay buffer.
-        
-        This method ensures belief states are processed sequentially for each trajectory,
-        not just as independent samples.
-        
-        Args:
-            batch_size: Number of sequences to sample
-            sequence_length: Length of each sequence
-            
-        Returns:
-            Dictionary of losses
-        """
-        # Sample sequential data from the replay buffer
-        batch_sequences = self.replay_buffer.sample(batch_size, sequence_length)
-        
-        # Update networks using sequential data
-        return self.update(batch_sequences)
     
     def _update_inference(self, neighbor_actions, next_observations, next_latents, means, logvars):
         """Update inference module (encoder-decoder).
@@ -621,6 +631,14 @@ class FURTHERPlusAgent:
             logvar: Current log variance of the latent distribution
         """
         return self.current_mean, self.current_logvar
+    
+    def get_opponent_belief_distribution(self):
+        """Return the current opponent belief distribution.
+        
+        Returns:
+            opponent_belief_distribution: Current opponent belief distribution tensor or None if not available
+        """
+        return self.current_opponent_belief_distribution if hasattr(self, 'current_opponent_belief_distribution') else None
         
     def end_episode(self):
         """

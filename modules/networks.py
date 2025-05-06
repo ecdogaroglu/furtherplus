@@ -68,7 +68,7 @@ class GRUBeliefProcessor(nn.Module):
     
 class EncoderNetwork(nn.Module):
     """Encoder network for inference of other agents' policies."""
-    def __init__(self, observation_dim, action_dim, latent_dim, hidden_dim, num_agents, device=None):
+    def __init__(self, observation_dim, action_dim, latent_dim, hidden_dim, num_agents, device=None, num_belief_states=None):
         # Use the best available device if none is specified
         if device is None:
             device = get_best_device()
@@ -76,6 +76,7 @@ class EncoderNetwork(nn.Module):
         self.device = device
         self.action_dim = action_dim
         self.num_agents = num_agents
+        self.num_belief_states = num_belief_states
         
         # Combined input: observation, action, reward, next_obs and current latent
         input_dim = observation_dim + action_dim * num_agents + 1 + observation_dim + latent_dim
@@ -91,6 +92,14 @@ class EncoderNetwork(nn.Module):
         nn.init.xavier_normal_(self.fc2.weight)
         nn.init.xavier_normal_(self.fc_mean.weight)
         nn.init.xavier_normal_(self.fc_logvar.weight)
+        
+        # Add softmax head for opponent belief distribution if num_belief_states is provided
+        if num_belief_states is not None:
+            self.opponent_belief_head = nn.Linear(hidden_dim, num_belief_states)
+            nn.init.xavier_normal_(self.opponent_belief_head.weight)
+            nn.init.constant_(self.opponent_belief_head.bias, 0)
+        else:
+            self.opponent_belief_head = None
     
     def forward(self, observation, actions, reward, next_observation, current_latent):
         """Encode the state into a latent distribution."""
@@ -138,7 +147,14 @@ class EncoderNetwork(nn.Module):
         mean = self.fc_mean(x)
         logvar = self.fc_logvar(x)
         
-        return mean, logvar
+        # Calculate opponent belief distribution if softmax head is available
+        opponent_belief_distribution = None
+        if self.opponent_belief_head is not None:
+            logits = self.opponent_belief_head(x)
+            temperature = 0.1  # Temperature for softmax
+            opponent_belief_distribution = F.softmax(logits/temperature, dim=-1)
+        
+        return mean, logvar, opponent_belief_distribution
 
 class DecoderNetwork(nn.Module):
     """Decoder network for predicting other agents' actions."""
