@@ -39,7 +39,7 @@ class FURTHERPlusAgent:
         self.discount_factor = discount_factor
         self.entropy_weight = entropy_weight
         self.kl_weight = kl_weight
-        self.target_update_rate = target_update_rate
+        self.target_update_rate = 0.01  # Faster updates for target networks
         self.max_trajectory_length = max_trajectory_length
         
         # Global variables for action logits and neighbor action logits to prevent recalculation

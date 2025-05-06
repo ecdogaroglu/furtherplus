@@ -261,6 +261,8 @@ class SocialLearningEnvironment:
         """
         # For binary state space with signal accuracy p
         p = self.signal_accuracy
+        if p ==1:
+            return 0.0
         autarky_rate = (2*p - 1) * np.log(p/(1-p))
         return autarky_rate
     
@@ -273,6 +275,8 @@ class SocialLearningEnvironment:
         """
         # For binary state space with signal accuracy p
         p = self.signal_accuracy
+        if p == 1:
+            return 0.0
         bound_rate = 2 * (2*p - 1) * np.log(p/(1-p))
         return bound_rate
     
@@ -285,6 +289,8 @@ class SocialLearningEnvironment:
         """
         # For binary state space with signal accuracy p
         p = self.signal_accuracy
+        if p == 1:
+            return 0.0
         coordination_rate = 4 * (p - 0.5)**2 * np.log(p/(1-p)) / (2*p - 1)
         return coordination_rate
         

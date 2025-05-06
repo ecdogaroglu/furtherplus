@@ -7,8 +7,7 @@ class GRUBeliefProcessor(nn.Module):
     """GRU-based belief state processor for FURTHER+."""
     def __init__(self, input_dim, hidden_dim, action_dim, device=None, num_belief_states=None):
         # Use the best available device if none is specified
-        if device is None:
-            device = get_best_device()
+
         super(GRUBeliefProcessor, self).__init__()
         self.device = device
         self.hidden_dim = hidden_dim
@@ -26,13 +25,11 @@ class GRUBeliefProcessor(nn.Module):
             elif 'bias' in name:
                 nn.init.constant_(param, 0)
         
-        # Add softmax head for belief distribution if num_belief_states is provided
-        if num_belief_states is not None:
-            self.belief_head = nn.Linear(hidden_dim, num_belief_states)
-            nn.init.xavier_normal_(self.belief_head.weight)
-            nn.init.constant_(self.belief_head.bias, 0)
-        else:
-            self.belief_head = None
+        # Add softmax head for belief distribution
+        self.belief_head = nn.Linear(hidden_dim, num_belief_states)
+        nn.init.xavier_normal_(self.belief_head.weight)
+        nn.init.constant_(self.belief_head.bias, 0)
+
     
     def forward(self, observation, current_belief=None):
         """Update belief state based on new observation and action."""
@@ -54,15 +51,13 @@ class GRUBeliefProcessor(nn.Module):
         # Process through GRU
         _, new_belief = self.gru(observation, current_belief)
         
-        # Calculate belief distribution if softmax head is available
-        belief_distribution = None
-        if self.belief_head is not None:
-            # Extract the belief state (remove the first dimension which is num_layers)
-            belief_for_head = new_belief.squeeze(0)
-            # Pass through linear layer and apply softmax
-            logits = self.belief_head(belief_for_head)
-            temperature = 0.1  # Temperature for softmax
-            belief_distribution = F.softmax(logits/temperature, dim=-1)
+        # Calculate belief distribution 
+        # Extract the belief state (remove the first dimension which is num_layers)
+        belief_for_head = new_belief.squeeze(0)
+        # Pass through linear layer and apply softmax
+        logits = self.belief_head(belief_for_head)
+        temperature = 0.1  # Temperature for softmax
+        belief_distribution = F.softmax(logits/temperature, dim=-1)
         
         return new_belief, belief_distribution
     
@@ -70,15 +65,14 @@ class EncoderNetwork(nn.Module):
     """Encoder network for inference of other agents' policies."""
     def __init__(self, observation_dim, action_dim, latent_dim, hidden_dim, num_agents, device=None, num_belief_states=None):
         # Use the best available device if none is specified
-        if device is None:
-            device = get_best_device()
+
         super(EncoderNetwork, self).__init__()
         self.device = device
         self.action_dim = action_dim
         self.num_agents = num_agents
         self.num_belief_states = num_belief_states
         
-        # Combined input: observation, action, reward, next_obs and current latent
+        # Combined input: observation, actions, reward, next_obs and current latent
         input_dim = observation_dim + action_dim * num_agents + 1 + observation_dim + latent_dim
         
         # Encoder network layers
@@ -93,13 +87,11 @@ class EncoderNetwork(nn.Module):
         nn.init.xavier_normal_(self.fc_mean.weight)
         nn.init.xavier_normal_(self.fc_logvar.weight)
         
-        # Add softmax head for opponent belief distribution if num_belief_states is provided
-        if num_belief_states is not None:
-            self.opponent_belief_head = nn.Linear(hidden_dim, num_belief_states)
-            nn.init.xavier_normal_(self.opponent_belief_head.weight)
-            nn.init.constant_(self.opponent_belief_head.bias, 0)
-        else:
-            self.opponent_belief_head = None
+        # Add softmax head for opponent belief distribution 
+        self.opponent_belief_head = nn.Linear(hidden_dim, num_belief_states)
+        nn.init.xavier_normal_(self.opponent_belief_head.weight)
+        nn.init.constant_(self.opponent_belief_head.bias, 0)
+
     
     def forward(self, observation, actions, reward, next_observation, current_latent):
         """Encode the state into a latent distribution."""
@@ -147,12 +139,10 @@ class EncoderNetwork(nn.Module):
         mean = self.fc_mean(x)
         logvar = self.fc_logvar(x)
         
-        # Calculate opponent belief distribution if softmax head is available
-        opponent_belief_distribution = None
-        if self.opponent_belief_head is not None:
-            logits = self.opponent_belief_head(x)
-            temperature = 0.1  # Temperature for softmax
-            opponent_belief_distribution = F.softmax(logits/temperature, dim=-1)
+        # Calculate opponent belief distribution
+        logits = self.opponent_belief_head(x)
+        temperature = 0.5  # Temperature for softmax
+        opponent_belief_distribution = F.softmax(logits/temperature, dim=-1)
         
         return mean, logvar, opponent_belief_distribution
 

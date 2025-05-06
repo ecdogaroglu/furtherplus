@@ -15,7 +15,8 @@ def initialize_metrics(env, args, training):
         'incorrect_probs': [],
         'action_probs': {agent_id: [] for agent_id in range(env.num_agents)},
         'full_action_probs': {agent_id: [] for agent_id in range(env.num_agents)},
-        'true_states': []
+        'true_states': [],
+        'agent_actions': {agent_id: [] for agent_id in range(env.num_agents)}  # Track actions taken by each agent
     }
     
     # Add training-specific or evaluation-specific metrics
@@ -68,6 +69,11 @@ def update_metrics(metrics, info, env, actions, action_probs, step, training):
     
     # Store true state
     metrics['true_states'].append(env.true_state)
+    
+    # Store agent actions
+    for agent_id, action in actions.items():
+        if 'agent_actions' in metrics and agent_id in metrics['agent_actions']:
+            metrics['agent_actions'][agent_id].append(action)
     
     # Update correct action counts for evaluation
     if not training and 'correct_actions' in metrics:
@@ -145,6 +151,8 @@ def prepare_serializable_metrics(metrics, learning_rates, theoretical_bounds, nu
         'full_action_probs': {str(agent_id): [[float(p) for p in dist] for dist in probs] 
                               for agent_id, probs in metrics['full_action_probs'].items()},
         'true_states': metrics['true_states'],
+        'agent_actions': {str(agent_id): [int(a) for a in actions] 
+                         for agent_id, actions in metrics['agent_actions'].items()},
         'learning_rates': {str(k): float(v) for k, v in learning_rates.items()},
         
         # Add belief and latent states if they exist

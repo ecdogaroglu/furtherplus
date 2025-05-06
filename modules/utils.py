@@ -1,12 +1,13 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from typing import Dict, List, Optional, Union
-import networkx as nx
+from typing import Dict, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import os
- 
+import torch
+import numpy as np
+import json
+from pathlib import Path
+
 def encode_observation(
     signal: int,
     neighbor_actions: Dict[int, int],
@@ -110,310 +111,6 @@ def calculate_agent_learning_rates(
         learning_rates[agent_id] = calculate_learning_rate(avg_probs)
         
     return learning_rates
-
-def plot_incorrect_action_probabilities(
-    incorrect_probs: Dict[int, List[float]],
-    title: str = "Incorrect Action Probabilities Over Time",
-    save_path: Optional[str] = None,
-    max_steps: Optional[int] = None,
-    log_scale: bool = False,
-    show_learning_rates: bool = True,
-    episode_length: Optional[int] = None
-) -> None:
-    """
-    Plot incorrect action probabilities for all agents with separate subplots for each episode.
-    
-    Args:
-        incorrect_probs: Dictionary mapping agent IDs to lists of incorrect action probabilities over time
-        title: Title of the plot
-        save_path: Path to save the figure (if None, figure is displayed)
-        max_steps: Maximum number of steps to plot (if None, plots all steps)
-        log_scale: Whether to use logarithmic scale for y-axis
-        show_learning_rates: Whether to calculate and display learning rates in the legend
-        episode_length: Length of each episode (if None, treats all data as a single episode)
-    """
-    # Determine total steps and number of episodes
-    total_steps = max(len(probs) for probs in incorrect_probs.values())
-    
-    if episode_length is None:
-        # If episode_length is not provided, treat all data as a single episode
-        num_episodes = 1
-        episode_length = total_steps
-    else:
-        # Calculate number of episodes based on total steps and episode length
-        num_episodes = (total_steps + episode_length - 1) // episode_length  # Ceiling division
-    
-    # Create a figure with subplots for each episode (2 per row)
-    num_rows = (num_episodes + 1) // 2  # Ceiling division to get number of rows
-    num_cols = min(2, num_episodes)  # At most 2 columns
-    
-    fig_width = 12  # Fixed width for 2 columns
-    fig_height = 5 * num_rows  # Height scales with number of rows
-    
-    # Create figure and subplots
-    fig, axes = plt.subplots(nrows=num_rows, ncols=num_cols, figsize=(fig_width, fig_height), 
-                            sharey=True, squeeze=False)
-    axes = axes.flatten()  # Flatten to make indexing easier
-    
-    # Define a colormap for different agents
-    colors = plt.cm.tab10(np.linspace(0, 1, len(incorrect_probs)))
-    
-    # Store learning rates for each agent across episodes
-    learning_rates = {agent_id: [] for agent_id in incorrect_probs.keys()}
-    
-    # Plot each episode in a separate subplot
-    for episode in range(num_episodes):
-        ax = axes[episode]
-        
-        # Set subplot title
-        ax.set_title(f"Episode {episode+1}")
-        
-        # Calculate start and end indices for this episode
-        start_idx = episode * episode_length
-        end_idx = min(start_idx + episode_length, total_steps)
-        
-        # Plot each agent's data for this episode
-        for i, (agent_id, probs) in enumerate(sorted(incorrect_probs.items())):
-            agent_color = colors[i]
-            
-            # Skip if we're out of data for this agent
-            if start_idx >= len(probs):
-                continue
-                
-            # Extract data for this episode
-            episode_probs = probs[start_idx:min(end_idx, len(probs))]
-            time_steps = np.arange(len(episode_probs))
-            
-            # Create label for this agent
-            label = f"Agent {agent_id}"
-            
-            # Plot with appropriate scale
-            if log_scale:
-                line, = ax.semilogy(time_steps, episode_probs, 
-                                  label=label,
-                                  color=agent_color,
-                                  linewidth=2)
-            else:
-                line, = ax.plot(time_steps, episode_probs, 
-                              label=label,
-                              color=agent_color,
-                              linewidth=2)
-            
-            # Calculate and display learning rate if requested
-            if show_learning_rates and len(episode_probs) >= 10:
-                learning_rate = calculate_learning_rate(episode_probs)
-                learning_rates[agent_id].append(learning_rate)
-                
-                # Update the label with learning rate
-                line.set_label(f"{label} (r = {learning_rate:.4f})")
-                
-                # Plot fitted exponential decay
-                x = np.arange(len(episode_probs))
-                initial_value = episode_probs[0]
-                y = np.exp(-learning_rate * x) * initial_value
-                
-                if log_scale:
-                    ax.semilogy(x, y, '--', alpha=0.3, color=line.get_color())
-                else:
-                    ax.plot(x, y, '--', alpha=0.3, color=line.get_color())
-        
-        # Set labels and grid
-        ax.set_xlabel("Time Steps")
-        if episode == 0:  # Only set y-label on the first subplot
-            ax.set_ylabel("Incorrect Action Probability" + (" (log scale)" if log_scale else ""))
-        
-        ax.grid(True, which="both" if log_scale else "major", ls="--", alpha=0.7)
-        
-        # Set y-axis limits for better visualization
-        if log_scale:
-            ax.set_ylim(0.001, 1.0)
-        else:
-            ax.set_ylim(0, 1.0)
-        
-        # Add legend to each subplot
-        ax.legend(loc='best', fontsize='small')
-    
-    # Set a common title for the entire figure
-    fig.suptitle(title, fontsize=16)
-    
-    # Add a text box with average learning rates across episodes
-    if show_learning_rates and num_episodes > 1:
-        avg_rates_text = "Average Learning Rates:\n"
-        for agent_id, rates in learning_rates.items():
-            if rates:  # Only include if we have rates
-                avg_rate = np.mean(rates)
-                avg_rates_text += f"Agent {agent_id}: {avg_rate:.4f}\n"
-        
-        # Add text box to the figure
-        fig.text(0.01, 0.01, avg_rates_text, fontsize=10, 
-                 bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
-    
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Adjust layout to make room for suptitle
-    
-    if save_path:
-        try:
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-            
-            # Save the figure
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved incorrect action probabilities plot to {save_path}")
-            plt.close()
-        except Exception as e:
-            print(f"Error saving plot to {save_path}: {e}")
-            plt.close()
-    else:
-        plt.show()
-    
-
-def plot_belief_distributions(
-    belief_distributions: Dict[int, List[torch.Tensor]],
-    true_states: List[int] = None,
-    title: str = "Agent Belief Distributions Over Time",
-    save_path: Optional[str] = None,
-    max_steps: Optional[int] = None,
-    episode_length: Optional[int] = None,
-    num_episodes: Optional[int] = 1
-) -> None:
-    """
-    Simplified version of the plot_belief_distributions function.
-    """
-    num_agents = len(belief_distributions)
-    
-    # Determine total steps
-    total_steps = max(len(beliefs) for beliefs in belief_distributions.values())
-    
-    # If episode_length is not provided, use total_steps / num_episodes
-    if episode_length is None:
-        episode_length = total_steps // num_episodes if num_episodes > 0 else total_steps
-    
-    # Ensure we don't try to show more episodes than we have data for
-    if num_episodes > 1 and episode_length * num_episodes > total_steps:
-        num_episodes = max(1, total_steps // episode_length)
-    
-    # Create a figure with subplots arranged in a grid
-    fig, all_axes = plt.subplots(
-        num_agents,  # One row per agent
-        num_episodes,  # One column per episode
-        figsize=(8 * num_episodes, 5 * num_agents),
-        sharex='col',  # Share x-axis within columns
-        sharey='row'   # Share y-axis within rows
-    )
-    
-    # Make sure all_axes is a 2D array
-    if num_agents == 1 and num_episodes == 1:
-        all_axes = np.array([[all_axes]])
-    elif num_agents == 1:
-        all_axes = np.array([all_axes])
-    elif num_episodes == 1:
-        all_axes = np.array([[ax] for ax in all_axes])
-    
-    # Plot each agent and episode
-    for j, agent_id in enumerate(sorted(belief_distributions.keys())):
-        for ep in range(num_episodes):
-            # Each agent is a row, each episode is a column
-            grid_row = j
-            grid_col = ep
-            
-            # Skip if we're out of bounds
-            if grid_row >= num_agents or grid_col >= num_episodes:
-                continue
-                
-            ax = all_axes[grid_row, grid_col]
-            
-            # Calculate start and end indices for this episode
-            start_idx = ep * episode_length
-            end_idx = min(start_idx + episode_length, len(belief_distributions[agent_id]))
-            
-            # Set the title for this subplot
-            ax.set_title(f"Agent {agent_id} - Episode {ep+1}")
-            
-            # Skip if we're out of data for this agent
-            if start_idx >= len(belief_distributions[agent_id]) or start_idx == end_idx:
-                continue
-            
-            # Get belief distributions for this agent and episode
-            agent_beliefs = belief_distributions[agent_id][start_idx:end_idx]
-            
-            # Create time steps array (relative to episode start)
-            time_steps = np.arange(len(agent_beliefs))
-            
-            # Skip if no data
-            if len(agent_beliefs) == 0:
-                continue
-            
-            # Get the number of belief states
-            num_belief_states = agent_beliefs[0].shape[-1]
-            
-            # Create a line plot for each belief state
-            belief_values = np.zeros((len(agent_beliefs), num_belief_states))
-            for t, belief in enumerate(agent_beliefs):
-                # Convert to numpy
-                if isinstance(belief, torch.Tensor):
-                    belief_np = belief.detach().cpu().numpy()
-                    if belief_np.ndim > 1:
-                        belief_np = belief_np.flatten()
-                else:
-                    belief_np = np.array(belief)
-                    if belief_np.ndim > 1:
-                        belief_np = belief_np.flatten()
-                
-                belief_values[t] = belief_np
-            
-            # Plot lines for each belief state
-            colors = plt.cm.viridis(np.linspace(0, 1, num_belief_states))
-            for state in range(num_belief_states):
-                ax.plot(
-                    time_steps, 
-                    belief_values[:, state], 
-                    label=f'State {state}',
-                    color=colors[state],
-                    linewidth=2
-                )
-            
-            # Add legend
-            if ep == 0 and j == 0:  # Only add legend to first subplot to avoid clutter
-                ax.legend(loc='upper right', fontsize='small')
-            
-            # Set y-axis limits
-            ax.set_ylim(0, 1.05)  # Probabilities range from 0 to 1
-            
-            # Add horizontal line at y=0.5 for reference
-            ax.axhline(y=0.5, color='gray', linestyle=':', alpha=0.5)
-            
-            # Highlight true state changes if provided
-            if true_states is not None:
-                # Get the true states for this episode
-                episode_true_states = true_states[start_idx:min(end_idx, len(true_states))]
-                
-                # Add vertical lines at state changes
-                prev_state = episode_true_states[0] if episode_true_states else None
-                for t, state in enumerate(episode_true_states):
-                    if state != prev_state:
-                        ax.axvline(x=t, color='red', linestyle='--', alpha=0.5)
-                        prev_state = state
-    
-    # Set common x-axis label for the bottom row
-    for col in range(all_axes.shape[1]):
-        all_axes[-1, col].set_xlabel("Time Steps")
-    
-    plt.tight_layout()
-    plt.suptitle(title, fontsize=16, y=1.02)
-    
-    if save_path:
-        try:
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
-            
-            # Save the figure
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved belief distributions plot to {save_path}")
-            plt.close()
-        except Exception as e:
-            print(f"Error saving plot to {save_path}: {e}")
-            plt.close()
-    else:
-        plt.show()
 
 def get_best_device():
     """Get the best available device (CUDA, MPS, or CPU).
@@ -521,3 +218,297 @@ def is_mps_faster_than_cpu(test_size=256, repeat=10):
     except Exception as e:
         print(f"Error during MPS benchmark: {e}")
         return False
+        
+
+def setup_random_seeds(seed, env):
+    """Set random seeds for reproducibility."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    env.seed(seed)
+
+
+def calculate_observation_dimension(env):
+    """Calculate the observation dimension based on environment properties."""
+    return env.num_states + env.num_agents * env.num_states
+
+
+def create_output_directory(args, env, training):
+    """Create and return the output directory for experiment results."""
+    dir_prefix = "" if training else "eval_"
+    output_dir = Path(args.output_dir) / args.exp_name / f"{dir_prefix}network_{args.network_type}_agents_{env.num_agents}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def load_agent_models(agents, model_path, num_agents):
+    """Load pre-trained models if a path is provided."""
+    
+    # If no model path is provided, skip loading
+    if model_path is None:
+        print("No model path provided. Starting with fresh models.")
+        return
+    
+    model_dir = Path(model_path)
+    if not model_dir.exists():
+        print(f"Warning: Model directory {model_dir} does not exist")
+        return
+    
+    models_loaded = 0
+    for agent_id in range(num_agents):
+        model_file = model_dir / f"agent_{agent_id}.pt"
+        if model_file.exists():
+            print(f"Loading model for agent {agent_id} from {model_file}")
+            agents[agent_id].load(str(model_file))
+            agents[agent_id].reset_internal_state()
+            models_loaded += 1
+        else:
+            print(f"Warning: Model file {model_file} not found")
+    
+    if models_loaded == 0:
+        print(f"No model files found in directory {model_dir} for any of the {num_agents} agents")
+
+
+def calculate_theoretical_bounds(env):
+    """Calculate theoretical performance bounds."""
+    return {
+        'autarky_rate': env.get_autarky_rate(),
+        'bound_rate': env.get_bound_rate(),
+        'coordination_rate': env.get_coordination_rate()
+    }
+
+
+def display_theoretical_bounds(bounds):
+    """Display theoretical bounds information."""
+    print(f"Theoretical bounds:")
+    print(f"  Autarky rate: {bounds['autarky_rate']:.4f}")
+    print(f"  Coordination rate: {bounds['coordination_rate']:.4f}")
+    print(f"  Upper bound rate: {bounds['bound_rate']:.4f}")
+
+
+def write_config_file(args, env, bounds, output_dir):
+    """Write configuration to a JSON file."""
+    with open(output_dir / 'config.json', 'w') as f:
+        config = {
+            'args': vars(args),
+            'theoretical_bounds': bounds,
+            'environment': {
+                'num_agents': env.num_agents,
+                'num_states': env.num_states,
+                'signal_accuracy': env.signal_accuracy,
+                'network_type': args.network_type,
+                'network_density': args.network_density if args.network_type == 'random' else None
+            }
+        }
+        json.dump(config, f, indent=2)
+
+
+def reset_agent_internal_states(agents):
+    """Reset all agents' internal states to ensure fresh start."""
+    for agent in agents.values():
+        agent.reset_internal_state()
+
+
+# Global metrics dictionary for tracking
+_metrics = None
+
+def get_metrics():
+    """Get the global metrics dictionary."""
+    global _metrics
+    return _metrics
+
+def set_metrics(metrics):
+    """Set the global metrics dictionary."""
+    global _metrics
+    _metrics = metrics
+
+def initialize_agent_belief_states(agents, observations, env):
+    """Initialize agent belief states based on initial observations."""
+    for agent_id, agent in agents.items():
+        # Encode observation for the agent
+        obs_data = observations[agent_id]
+        print(f"First signal for agent {agent_id} received: {obs_data['signal']}")
+        # Extract signal from observation
+        if isinstance(obs_data, dict) and 'signal' in obs_data:
+            signal = obs_data['signal']
+            if hasattr(signal, 'item'):  # Handle numpy scalar
+                signal = signal.item()
+            if 'neighbor_actions' in obs_data:
+                neighbor_actions = obs_data['neighbor_actions']
+            else:
+                neighbor_actions = {}  # No neighbor actions initially
+            
+        encoded_obs = encode_observation(
+            signal=signal,
+            neighbor_actions=neighbor_actions,
+            num_agents=env.num_agents,
+            num_states=env.num_states
+        )
+        
+        # Initialize belief state
+        agent.observe(encoded_obs)
+        
+        # Print belief distributions
+        belief_dist = agent.get_belief_distribution()
+        if belief_dist is not None:
+            print(f"Agent {agent_id} belief distribution: {belief_dist.detach().cpu().numpy()}")
+        
+        # Print opponent belief distributions
+        opponent_belief_dist = agent.get_opponent_belief_distribution()
+        if opponent_belief_dist is not None:
+            print(f"Agent {agent_id} opponent belief distribution: {opponent_belief_dist.detach().cpu().numpy()}")
+        
+        # Store initial belief states for visualization if evaluating
+        if not hasattr(agent, 'training') or not agent.training:
+            metrics = get_metrics()
+            if 'belief_states' in metrics and agent_id in metrics['belief_states']:
+                current_belief = agent.get_belief_state()
+                if current_belief is not None:
+                    metrics['belief_states'][agent_id].append(current_belief.detach().cpu().numpy())
+            
+            # Get belief distribution using the method
+            agent_belief_distribution = agent.get_belief_distribution()
+            if 'belief_distributions' in metrics and agent_id in metrics['belief_distributions'] and agent_belief_distribution is not None:
+                metrics['belief_distributions'][agent_id].append(agent_belief_distribution.detach().cpu().numpy())
+
+
+def select_agent_actions(agents, metrics):
+    """Select actions for all agents and return with probabilities."""
+    actions = {}
+    action_probs = {}
+    
+    for agent_id, agent in agents.items():
+        action, probs = agent.select_action()
+        actions[agent_id] = action
+        
+        # Convert to numpy if it's a tensor
+        if hasattr(probs, 'cpu'):
+            probs_np = probs.cpu().numpy()
+        else:
+            probs_np = probs
+            
+        action_probs[agent_id] = probs_np
+        
+        # Store full action probability distribution
+        if 'full_action_probs' in metrics:
+            metrics['full_action_probs'][agent_id].append(probs_np)
+    
+    return actions, action_probs
+
+
+def update_total_rewards(total_rewards, rewards):
+    """Update total rewards for each agent."""
+    for agent_id, reward in rewards.items():
+        total_rewards[agent_id] += reward
+
+
+
+def store_transition_in_buffer(buffer, obs, belief, latent, action, reward, next_obs, 
+                              next_belief, next_latent, mean, logvar, neighbor_actions):
+    """Store a transition in the replay buffer."""
+    buffer.push(
+        observation=obs,
+        belief=belief,
+        latent=latent,
+        action=action,
+        reward=reward,
+        next_observation=next_obs,
+        next_belief=next_belief,
+        next_latent=next_latent,
+        mean=mean,
+        logvar=logvar,
+        neighbor_actions=neighbor_actions
+    )
+
+
+def get_neighbor_actions(actions, agent_id, env):
+    """Get actions of neighboring agents."""
+    # In the original code, neighbor_actions are directly provided in the observation
+    # This is a fallback implementation that doesn't rely on env.get_neighbors()
+    neighbor_actions = {}
+    
+    for other_id, action in actions.items():
+        if other_id != agent_id:  # Don't include the agent's own action
+            neighbor_actions[other_id] = action
+    
+    return neighbor_actions
+
+
+def update_progress_display(steps_iterator, info, total_rewards, step, training):
+    """Update the progress bar with current information."""
+    if 'mistake_rate' in info:
+        steps_iterator.set_postfix(mistake_rate=info['mistake_rate'])
+    
+    if training and step > 0 and step % 1000 == 0:
+        avg_rewards = total_rewards / (step + 1)
+        print(f"\nStep {step}: Average rewards: {avg_rewards}")
+
+
+def save_checkpoint_models(agents, output_dir, step):
+    """Save checkpoint models during training."""
+    checkpoint_dir = output_dir / 'models' / f'checkpoint_{step+1}'
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    
+    for agent_id, agent in agents.items():
+        agent.save(str(checkpoint_dir / f'agent_{agent_id}.pt'))
+    
+    print(f"Saved checkpoint models at step {step+1} to {checkpoint_dir}")
+
+
+def save_final_models(agents, output_dir):
+    """Save final agent models."""
+    final_model_dir = output_dir / 'models' / 'final'
+    final_model_dir.mkdir(parents=True, exist_ok=True)
+    
+    for agent_id, agent in agents.items():
+        agent.save(str(final_model_dir / f'agent_{agent_id}.pt'))
+    
+    print(f"Saved final models to {final_model_dir}")
+
+
+def flatten_episodic_metrics(episodic_metrics, num_agents):
+    """
+    Flatten episodic metrics into a single combined metrics dictionary for backward compatibility.
+    
+    Args:
+        episodic_metrics: Dictionary with episodes list containing metrics for each episode
+        num_agents: Number of agents in the environment
+        
+    Returns:
+        combined_metrics: Flattened metrics dictionary
+    """
+    if not episodic_metrics['episodes']:
+        return {}  # No episodes to flatten
+        
+    # Initialize combined metrics based on the structure of the first episode
+    first_episode = episodic_metrics['episodes'][0]
+    combined_metrics = {}
+    
+    # Initialize each key in combined_metrics with the appropriate structure
+    for key, value in first_episode.items():
+        if isinstance(value, list):
+            combined_metrics[key] = []
+        elif isinstance(value, dict):
+            combined_metrics[key] = {}
+            for sub_key in value:
+                if isinstance(value[sub_key], list):
+                    combined_metrics[key][sub_key] = []
+                else:
+                    combined_metrics[key][sub_key] = value[sub_key]
+        else:
+            combined_metrics[key] = value
+    
+    # Combine metrics from all episodes
+    for episode_metrics in episodic_metrics['episodes']:
+        for key, value in episode_metrics.items():
+            if isinstance(value, list):
+                combined_metrics[key].extend(value)
+            elif isinstance(value, dict):
+                for sub_key in value:
+                    if isinstance(value[sub_key], list):
+                        if sub_key not in combined_metrics[key]:
+                            combined_metrics[key][sub_key] = []
+                        combined_metrics[key][sub_key].extend(value[sub_key])
+                    elif sub_key not in combined_metrics[key]:
+                        combined_metrics[key][sub_key] = value[sub_key]
+    
+    return combined_metrics
