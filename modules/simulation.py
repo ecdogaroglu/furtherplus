@@ -62,9 +62,10 @@ def run_agents(env, args, training=True, model_path=None):
     theoretical_bounds = calculate_theoretical_bounds(env)
     display_theoretical_bounds(theoretical_bounds)
     
+    replay_buffers = initialize_replay_buffers(agents, args, obs_dim)
+
     # Write configuration if training
     if training:
-        replay_buffers = initialize_replay_buffers(agents, args, obs_dim)
         write_config_file(args, env, theoretical_bounds, output_dir)
 
 

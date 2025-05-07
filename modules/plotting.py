@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from typing import Dict, List, Optional
 import torch
 import os
+from scipy import stats
 
 from modules.metrics import process_incorrect_probabilities, print_debug_info_for_plotting
 from modules.utils import calculate_learning_rate
@@ -47,6 +48,16 @@ def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=No
             episode_length=args.horizon  # Use horizon directly
         )
         
+        # Plot mean incorrect action probabilities with confidence intervals if we have multiple episodes
+        if episodic_metrics and 'episodes' in episodic_metrics and len(episodic_metrics['episodes']) > 1:
+            plot_mean_incorrect_action_probabilities_with_ci(
+                episodic_metrics=episodic_metrics,
+                title=f"Mean Incorrect Action Probabilities with 95% CI ({args.network_type.capitalize()} Network, {env.num_agents} Agents)",
+                save_path=str(output_dir / 'mean_incorrect_action_probs_with_ci.png'),
+                log_scale=False,
+                episode_length=args.horizon
+            )
+        
         # Plot agent actions if available
         if 'agent_actions' in metrics and any(len(actions) > 0 for actions in metrics['agent_actions'].values()):
             plot_agent_actions(
@@ -69,18 +80,8 @@ def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=No
         if has_belief_data or has_latent_data:
             print(f"Generating internal state plots in {'training' if training else 'evaluation'} mode...")
             
-            # Use episodic metrics if available, otherwise use combined metrics
-            if episodic_metrics and 'episodes' in episodic_metrics and episodic_metrics['episodes']:
-                print("Using episode-separated metrics for plotting...")
-                for i, episode_metrics in enumerate(episodic_metrics['episodes']):
-                    episode_dir = output_dir / f'episode_{i+1}'
-                    episode_dir.mkdir(exist_ok=True)
-                    generate_internal_state_plots(episode_metrics, env, args, episode_dir, episode_num=i+1)
-                
-                # Also generate combined plots for comparison
-                generate_internal_state_plots(metrics, env, args, output_dir)
-            else:
-                generate_internal_state_plots(metrics, env, args, output_dir)
+
+            generate_internal_state_plots(metrics, env, args, output_dir)
         else:
             print("No internal state data available for plotting. Make sure you're running in evaluation mode or collecting internal states during training.")
 
@@ -92,6 +93,152 @@ def create_empty_plot(output_dir):
              horizontalalignment='center', verticalalignment='center',
              transform=plt.gca().transAxes, fontsize=20)
     plt.savefig(str(output_dir / 'incorrect_action_probs.png'))
+    plt.close()
+
+
+def plot_mean_incorrect_action_probabilities_with_ci(
+    episodic_metrics: Dict,
+    title: str = "Mean Incorrect Action Probabilities with 95% CI",
+    save_path: Optional[str] = None,
+    log_scale: bool = False,
+    episode_length: Optional[int] = None
+) -> None:
+    """
+    Plot mean incorrect action probabilities across episodes with 95% confidence intervals.
+    
+    Args:
+        episodic_metrics: Dictionary containing episode-separated metrics
+        title: Title of the plot
+        save_path: Path to save the figure (if None, figure is displayed)
+        log_scale: Whether to use logarithmic scale for y-axis
+        episode_length: Length of each episode
+    """
+    if not episodic_metrics or 'episodes' not in episodic_metrics or not episodic_metrics['episodes']:
+        print("No episodic metrics available for plotting mean incorrect action probabilities with CI.")
+        return
+    
+    # Extract episodes data
+    episodes = episodic_metrics['episodes']
+    num_episodes = len(episodes)
+    
+    if num_episodes < 2:
+        print("Need at least 2 episodes to plot mean with confidence intervals.")
+        return
+    
+    # Get the number of agents from the first episode
+    if 'action_probs' not in episodes[0]:
+        print("No action probabilities found in episodic metrics.")
+        return
+    
+    agent_ids = list(episodes[0]['action_probs'].keys())
+    
+    # Create figure
+    plt.figure(figsize=(12, 8))
+    
+    # Define a colormap for different agents
+    colors = plt.cm.tab10(np.linspace(0, 1, len(agent_ids)))
+    
+    # For each agent, collect data across episodes and calculate mean and CI
+    for i, agent_id in enumerate(sorted(agent_ids, key=int)):
+        agent_color = colors[i]
+        
+        # Collect data for this agent across all episodes
+        # We need to ensure all episodes have the same length for this agent
+        min_length = min(len(episodes[ep_idx]['action_probs'][agent_id]) for ep_idx in range(num_episodes))
+        
+        if min_length == 0:
+            print(f"Agent {agent_id} has no data in at least one episode. Skipping.")
+            continue
+        
+        # Create a 2D array where each row is an episode and each column is a time step
+        agent_data = np.zeros((num_episodes, min_length))
+        for ep_idx in range(num_episodes):
+            agent_data[ep_idx, :] = episodes[ep_idx]['action_probs'][agent_id][:min_length]
+        
+        # Calculate mean and standard deviation across episodes for each time step
+        mean_probs = np.mean(agent_data, axis=0)
+        std_probs = np.std(agent_data, axis=0)
+        
+        # Calculate 95% confidence interval
+        # For small sample sizes, use t-distribution
+        t_value = stats.t.ppf(0.975, num_episodes - 1)  # 95% CI (two-tailed)
+        ci = t_value * std_probs / np.sqrt(num_episodes)
+        
+        # Create time steps array
+        time_steps = np.arange(min_length)
+        
+        # Plot mean line
+        if log_scale:
+            line, = plt.semilogy(time_steps, mean_probs, 
+                              label=f"Agent {agent_id}",
+                              color=agent_color,
+                              linewidth=2)
+        else:
+            line, = plt.plot(time_steps, mean_probs, 
+                          label=f"Agent {agent_id}",
+                          color=agent_color,
+                          linewidth=2)
+        
+        # Plot confidence interval
+        plt.fill_between(time_steps, 
+                         mean_probs - ci, 
+                         mean_probs + ci, 
+                         color=agent_color, 
+                         alpha=0.2)
+        
+        # Calculate and display learning rate for the mean curve
+        if len(mean_probs) >= 10:
+            learning_rate = calculate_learning_rate(mean_probs)
+            
+            # Update the label with learning rate
+            line.set_label(f"Agent {agent_id} (r = {learning_rate:.4f})")
+            
+            # Plot fitted exponential decay
+            x = np.arange(len(mean_probs))
+            initial_value = mean_probs[0]
+            y = np.exp(-learning_rate * x) * initial_value
+            
+            if log_scale:
+                plt.semilogy(x, y, '--', alpha=0.5, color=line.get_color())
+            else:
+                plt.plot(x, y, '--', alpha=0.5, color=line.get_color())
+    
+    # Set labels and grid
+    plt.xlabel("Time Steps")
+    plt.ylabel("Incorrect Action Probability" + (" (log scale)" if log_scale else ""))
+    plt.grid(True, which="both" if log_scale else "major", ls="--", alpha=0.7)
+    
+    # Set y-axis limits for better visualization
+    if log_scale:
+        plt.ylim(0.001, 1.0)
+    else:
+        plt.ylim(0, 1.0)
+    
+    # Add legend
+    plt.legend(loc='best')
+    
+    # Set title
+    plt.title(title)
+    
+    # Add text about number of episodes
+    plt.figtext(0.01, 0.01, f"Based on {num_episodes} episodes", fontsize=10, 
+               bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
+    
+    plt.tight_layout()
+    
+    if save_path:
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+            
+            # Save the figure
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Saved mean incorrect action probabilities plot with CI to {save_path}")
+        except Exception as e:
+            print(f"Error saving plot: {e}")
+    else:
+        plt.show()
+    
     plt.close()
 
 
