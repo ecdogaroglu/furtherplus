@@ -248,6 +248,7 @@ def update_agent_states(agents, observations, next_observations, actions, reward
             
         print(f"Step {step}: Agent {agent_id} observed signal {signal} resulting in belief distribution {next_dstr.tolist()}")
         # Store internal states for visualization if requested (for both training and evaluation)
+
         if args.plot_internal_states and 'belief_states' in metrics:
             current_belief = agent.get_belief_state()
             current_latent = agent.get_latent_state()
@@ -286,7 +287,9 @@ def update_agent_states(agents, observations, next_observations, actions, reward
             
             # Update networks if enough samples
             if len(replay_buffers[agent_id]) > args.batch_size and step % args.update_interval == 0:
+                # Sample a batch from the replay buffer
                 batch = replay_buffers[agent_id].sample(args.batch_size)
+                # Update network parameters
                 agent.update(batch)
 
 def initialize_agents(env, args, obs_dim):

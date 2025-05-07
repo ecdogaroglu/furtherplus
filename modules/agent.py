@@ -268,10 +268,13 @@ class FURTHERPlusAgent:
             self.current_latent
         )
         
-        # Sample from distribution
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std).to(self.device)
-        new_latent = mean + eps * std
+        # Sample based on reparameterized distribution 
+        # Ref: https://github.com/kampta/pytorch-distributions/blob/master/gaussian_vae.py
+        var = torch.exp(0.5 * logvar)
+        epsilon = 1e-6
+        var = var.clamp(min=epsilon)
+        distribution = torch.distributions.Normal(mean, var)
+        new_latent = distribution.rsample()
         
         # Store the current latent, mean, logvar, and opponent belief distribution
         self.current_latent = new_latent.unsqueeze(0)
@@ -279,22 +282,20 @@ class FURTHERPlusAgent:
         self.current_logvar = logvar
         self.current_opponent_belief_distribution = opponent_belief_distribution
         
-        # Compute neighbor action logits using the decoder
-        with torch.no_grad():
-            self.neighbor_action_logits = self.decoder(next_signal, new_latent)
-
         return new_latent
     
     def select_action(self):
         """Select action based on current belief and latent."""
+
         # Calculate fresh action logits for action selection
         action_logits = self.policy(self.current_belief, self.current_latent)
+
         # Store a detached copy for caching
         self.action_logits = action_logits.detach()
-        print(f"Action logits: {action_logits}")
+
         # Convert to probabilities
         action_probs = F.softmax(action_logits, dim=-1)
-        print(f"Action probabilities: {action_probs}")
+
         # Store probability of incorrect action for learning rate calculation
         self.action_probs_history.append(action_probs.squeeze(0).detach().cpu().numpy())
         

@@ -256,7 +256,6 @@ def load_agent_models(agents, model_path, num_agents):
         if model_file.exists():
             print(f"Loading model for agent {agent_id} from {model_file}")
             agents[agent_id].load(str(model_file))
-            agents[agent_id].reset_internal_state()
             models_loaded += 1
         else:
             print(f"Warning: Model file {model_file} not found")
