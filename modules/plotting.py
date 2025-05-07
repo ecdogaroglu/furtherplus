@@ -12,7 +12,7 @@ from scipy import stats
 
 from modules.metrics import process_incorrect_probabilities, print_debug_info_for_plotting
 from modules.utils import calculate_learning_rate
-from modules.latex_mplstyle import set_latex_style, format_axis_in_latex_style, save_figure_for_publication
+from modules.latex_style import set_latex_style, format_axis_in_latex_style, save_figure_for_publication
 
 def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=None, use_latex=False):
     """
@@ -26,6 +26,9 @@ def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=No
         training: Whether this is training or evaluation
         episodic_metrics: Optional dictionary with episode-separated metrics
         use_latex: Whether to use LaTeX rendering for text (requires LaTeX installation)
+    
+    Note:
+        For readability, plots are limited to showing the first 10 episodes even if more are available.
     """
     # Apply LaTeX-style formatting to all plots
     set_latex_style(use_tex=use_latex)
@@ -44,9 +47,11 @@ def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=No
         create_empty_plot(output_dir)
     else:
         # Plot incorrect action probabilities with episode separation
+        # Add note about episode limit if there are more than 10 episodes
+        episode_note = " (First 10 Episodes)" if args.num_episodes > 10 else ""
         plot_incorrect_action_probabilities(
             incorrect_probs=agent_incorrect_probs,
-            title=f"Incorrect Action Probabilities ({args.network_type.capitalize()} Network, {env.num_agents} Agents)",
+            title=f"Incorrect Action Probabilities ({args.network_type.capitalize()} Network, {env.num_agents} Agents){episode_note}",
             save_path=str(output_dir / 'incorrect_action_probs.png'),
             log_scale=False,
             show_learning_rates=True,
@@ -55,9 +60,12 @@ def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=No
         
         # Plot mean incorrect action probabilities with confidence intervals if we have multiple episodes
         if episodic_metrics and 'episodes' in episodic_metrics and len(episodic_metrics['episodes']) > 1:
+            # Include the number of episodes in a shorter title
+            num_episodes = len(episodic_metrics['episodes'])
             plot_mean_incorrect_action_probabilities_with_ci(
                 episodic_metrics=episodic_metrics,
-                title=f"Mean Incorrect Action Probabilities with 95% CI ({args.network_type.capitalize()} Network, {env.num_agents} Agents)",
+                title=f"Mean Incorrect Action Probabilities ({num_episodes} Episodes)",
+                subtitle=f"{args.network_type.capitalize()} Network, {env.num_agents} Agents",
                 save_path=str(output_dir / 'mean_incorrect_action_probs_with_ci.png'),
                 log_scale=False,
                 episode_length=args.horizon
@@ -65,13 +73,16 @@ def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=No
         
         # Plot agent actions if available
         if 'agent_actions' in metrics and any(len(actions) > 0 for actions in metrics['agent_actions'].values()):
+            # Add note about episode limit if there are more than 10 episodes
+            num_episodes_for_plot = args.num_episodes if training else 1
+            episode_note = " (First 10 Episodes)" if num_episodes_for_plot > 10 else ""
             plot_agent_actions(
                 actions=metrics['agent_actions'],
                 true_states=metrics['true_states'],
-                title=f"Agent Actions Over Time ({args.network_type.capitalize()} Network, {env.num_agents} Agents)",
+                title=f"Agent Actions Over Time ({args.network_type.capitalize()} Network, {env.num_agents} Agents){episode_note}",
                 save_path=str(output_dir / 'agent_actions.png'),
                 episode_length=args.horizon,
-                num_episodes=args.num_episodes if training else 1
+                num_episodes=num_episodes_for_plot
             )
     
     # Plot internal states if requested (for both training and evaluation)
@@ -106,7 +117,8 @@ def plot_mean_incorrect_action_probabilities_with_ci(
     title: str = "Mean Incorrect Action Probabilities with 95% CI",
     save_path: Optional[str] = None,
     log_scale: bool = False,
-    episode_length: Optional[int] = None
+    episode_length: Optional[int] = None,
+    subtitle: Optional[str] = None
 ) -> None:
     """
     Plot mean incorrect action probabilities across episodes with 95% confidence intervals.
@@ -117,6 +129,7 @@ def plot_mean_incorrect_action_probabilities_with_ci(
         save_path: Path to save the figure (if None, figure is displayed)
         log_scale: Whether to use logarithmic scale for y-axis
         episode_length: Length of each episode
+        subtitle: Optional subtitle to display below the main title
     """
     if not episodic_metrics or 'episodes' not in episodic_metrics or not episodic_metrics['episodes']:
         print("No episodic metrics available for plotting mean incorrect action probabilities with CI.")
@@ -124,7 +137,12 @@ def plot_mean_incorrect_action_probabilities_with_ci(
     
     # Extract episodes data
     episodes = episodic_metrics['episodes']
-    num_episodes = len(episodes)
+    
+    # Keep track of the total number of episodes for the title
+    total_episodes = len(episodes)
+    
+    # We'll use all episodes for calculation (not limiting to 10)
+    num_episodes = total_episodes
     
     if num_episodes < 2:
         print("Need at least 2 episodes to plot mean with confidence intervals.")
@@ -242,9 +260,16 @@ def plot_mean_incorrect_action_probabilities_with_ci(
     # Set title with LaTeX-style formatting
     ax.set_title(title)
     
-    # Add text about number of episodes with LaTeX-style formatting
-    fig.text(0.01, 0.01, f"Based on {num_episodes} episodes", fontsize=9, 
-            bbox=dict(facecolor='white', alpha=0.9, edgecolor='black', boxstyle='round,pad=0.5'))
+    # Add a subtitle if provided
+    if subtitle:
+        ax.text(0.5, 0.97, subtitle, 
+               horizontalalignment='center',
+               verticalalignment='top',
+               transform=ax.transAxes,
+               fontsize=10,
+               alpha=0.8)
+    
+    # Number of episodes is now included in the title, so we don't need a separate text box
     
     # Save the figure in publication-quality formats
     if save_path:
@@ -364,6 +389,11 @@ def plot_incorrect_action_probabilities(
     else:
         # Calculate number of episodes based on total steps and episode length
         num_episodes = (total_steps + episode_length - 1) // episode_length  # Ceiling division
+        
+        # Limit to first 10 episodes for readability
+        num_episodes = min(num_episodes, 10)
+        # Limit total steps to only include the episodes we're plotting
+        total_steps = min(total_steps, num_episodes * episode_length)
     
     # Create a figure with subplots for each episode (2 per row)
     num_rows = (num_episodes + 1) // 2  # Ceiling division to get number of rows
@@ -667,6 +697,18 @@ def plot_agent_actions(actions, true_states, title, save_path=None, episode_leng
         episode_length: Length of each episode (for marking episode boundaries)
         num_episodes: Number of episodes in the data
     """
+    # Limit to first 10 episodes for readability
+    if num_episodes > 10:
+        print(f"Limiting agent actions plot to first 10 episodes out of {num_episodes} total episodes")
+        num_episodes = 10
+        
+        # Limit the data to only include the episodes we're plotting
+        if episode_length:
+            max_steps = num_episodes * episode_length
+            true_states = true_states[:max_steps] if true_states else []
+            for agent_id in actions:
+                if len(actions[agent_id]) > max_steps:
+                    actions[agent_id] = actions[agent_id][:max_steps]
     # Determine number of agents to plot (limit to 8 for readability)
     agent_ids = list(actions.keys())
     num_agents_to_plot = min(8, len(agent_ids))
