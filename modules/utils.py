@@ -349,12 +349,12 @@ def update_total_rewards(total_rewards, rewards):
 
 
 
-def store_transition_in_buffer(buffer, signal, neigbor_actions, belief, latent, action, reward, next_signal, 
-                              next_belief, next_latent, mean, logvar, neighbor_actions):
+def store_transition_in_buffer(buffer, signal, neighbor_actions, belief, latent, action, reward, next_signal, 
+                              next_belief, next_latent, mean, logvar):
     """Store a transition in the replay buffer."""
     buffer.push(
         signal=signal,
-        neighbor_actions=neigbor_actions,
+        neighbor_actions=neighbor_actions,
         belief=belief,
         latent=latent,
         action=action,

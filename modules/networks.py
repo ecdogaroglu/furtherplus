@@ -11,7 +11,7 @@ class GRUBeliefProcessor(nn.Module):
         super(GRUBeliefProcessor, self).__init__()
         self.device = device
         self.hidden_dim = hidden_dim
-        self.input_dim = action_dim* num_belief_states + num_belief_states
+        self.input_dim = action_dim + num_belief_states  # Fixed input dimension calculation
         self.action_dim = action_dim
         self.num_belief_states = num_belief_states
         
@@ -30,26 +30,65 @@ class GRUBeliefProcessor(nn.Module):
         nn.init.xavier_normal_(self.belief_head.weight)
         nn.init.constant_(self.belief_head.bias, 0)
 
+    def standardize_belief_state(self, belief):
+        """Ensure belief state has consistent shape [1, batch_size, hidden_dim]."""
+        if belief is None:
+            return None
+            
+        # Add batch dimension if missing
+        if belief.dim() == 1:  # [hidden_dim]
+            belief = belief.unsqueeze(0)  # [1, hidden_dim]
+            
+        # Add sequence dimension if missing
+        if belief.dim() == 2:  # [batch_size, hidden_dim]
+            belief = belief.unsqueeze(0)  # [1, batch_size, hidden_dim]
+            
+        # Transpose if dimensions are in wrong order
+        if belief.dim() == 3 and belief.size(0) != 1:
+            belief = belief.transpose(0, 1).contiguous()
+            
+        return belief
     
     def forward(self, signal, neighbor_actions, current_belief=None):
-        """Update belief state based on new observation and action."""
-        # If no previous belief, initialize with zeros
+        """Update belief state based on new observation."""
+        # Handle both batched and single inputs
+        
+        # Ensure we have batch dimension for both inputs
+        if signal.dim() == 1:
+            signal = signal.unsqueeze(0)
+        if neighbor_actions.dim() == 1:
+            neighbor_actions = neighbor_actions.unsqueeze(0)
+            
+        batch_size = signal.size(0)
+            
+        # Ensure signal and neighbor_actions have correct dimensions
+        if signal.size(1) != self.num_belief_states:
+            signal = signal[:, :self.num_belief_states]
+        if neighbor_actions.size(1) != self.action_dim:
+            neighbor_actions = neighbor_actions[:, :self.action_dim]
+            
+        # Initialize or standardize current_belief
         if current_belief is None:
-            current_belief = torch.zeros(1, 1, self.hidden_dim, device=self.device)
-
-        combined = torch.cat([
-            signal,
-            neighbor_actions,
-        ], dim=0).unsqueeze(0)  # Add batch dimension
+            current_belief = torch.zeros(1, batch_size, self.hidden_dim, device=self.device)
+        else:
+            current_belief = self.standardize_belief_state(current_belief)
+            
+        # Combine inputs along feature dimension
+        combined = torch.cat([signal, neighbor_actions], dim=1)
+        # Add sequence dimension (GRU expects [batch, seq_len, features])
+        combined = combined.unsqueeze(1).to(self.device)  # [batch_size, 1, input_dim]
         
         # Process through GRU
         _, new_belief = self.gru(combined, current_belief)
         
-        # Calculate belief distribution 
-        # Pass through linear layer and apply softmax
+        # Calculate belief distribution
         logits = self.belief_head(new_belief.squeeze(0))
         temperature = 0.5  # Temperature for softmax
         belief_distribution = F.softmax(logits/temperature, dim=-1)
+        
+        # Ensure new_belief maintains shape [1, batch_size, hidden_dim]
+        new_belief = self.standardize_belief_state(new_belief)
+        
         return new_belief, belief_distribution
     
 class EncoderNetwork(nn.Module):
@@ -86,17 +125,44 @@ class EncoderNetwork(nn.Module):
     
     def forward(self, signal, actions, reward, next_signal, current_latent):
         """Encode the state into a latent distribution."""
-
-        current_latent = current_latent.squeeze(0) 
-        # Ensure current_latent has the correct shape
-        # Combine inputs
+        signal = signal.to(self.device)
+        actions = actions.to(self.device)   
+        reward = reward.to(self.device) 
+        next_signal = next_signal.to(self.device)   
+        current_latent = current_latent.to(self.device) 
+        # Handle different dimensions
+        if current_latent.dim() == 3:  # [batch_size, 1, latent_dim]
+            current_latent = current_latent.squeeze(1)
+            
+        # Ensure all inputs have batch dimension and are 2D tensors
+        if signal.dim() == 1:
+            signal = signal.unsqueeze(0)
+        if actions.dim() == 1:
+            actions = actions.unsqueeze(0)
+            
+        # Handle reward which could be a scalar or tensor
+        if isinstance(reward, (int, float)):
+            reward = torch.tensor([[reward]], dtype=torch.float32, device=self.device)
+        elif isinstance(reward, torch.Tensor):
+            if reward.dim() == 0:
+                reward = reward.unsqueeze(0).unsqueeze(0)
+            elif reward.dim() == 1:
+                reward = reward.unsqueeze(1)
+                
+        if next_signal.dim() == 1:
+            next_signal = next_signal.unsqueeze(0)
+            
+        if current_latent.dim() == 1:
+            current_latent = current_latent.unsqueeze(0)
+            
+        # Combine inputs along feature dimension
         combined = torch.cat([
             signal,
             actions,
             reward,
             next_signal,
             current_latent
-        ], dim=0)
+        ], dim=1).to(self.device)  # [batch_size, input_dim]
         
         # Forward pass
         x = F.relu(self.fc1(combined))
@@ -120,6 +186,12 @@ class DecoderNetwork(nn.Module):
         super(DecoderNetwork, self).__init__()
         self.device = device
         self.action_dim = action_dim
+        self.num_agents = num_agents
+        self.num_belief_states = num_belief_states
+        
+        # Store dimensions for debugging
+        self.observation_dim = num_belief_states
+        self.latent_dim = latent_dim
         
         # Combined input: observation and latent
         input_dim = num_belief_states + latent_dim
@@ -135,9 +207,27 @@ class DecoderNetwork(nn.Module):
         nn.init.xavier_normal_(self.fc3.weight)
     
     def forward(self, signal, latent):
+        signal = signal.to(self.device)
+        latent = latent.to(self.device) 
+        
         """Predict peer actions from observation and latent."""
+        # Handle different dimensions
+        print(f"Decoder input shapes - signal: {signal.shape}, latent: {latent.shape}")
+        if latent.dim() == 3:  # [batch_size, 1, latent_dim]
+            latent = latent.squeeze(0)
+        
+        # Create a new input tensor with the correct dimensions
+        batch_size = signal.size(0) if signal.dim() > 1 else 1
+        
+        # Ensure latent has the right shape
+        if latent.dim() == 1:
+            latent = latent.unsqueeze(0)
+
+        if signal.dim() == 1:
+            signal = signal.unsqueeze(0)
+        
         # Combine inputs
-        combined = torch.cat([signal, latent], dim=0)
+        combined = torch.cat([signal, latent], dim=1)
         
         # Forward pass
         x = F.relu(self.fc1(combined))
@@ -171,9 +261,25 @@ class PolicyNetwork(nn.Module):
     
     def forward(self, belief, latent):
         """Compute action logits given belief and latent."""
-        # Combine inputs
-
-        combined = torch.cat([belief.squeeze(0), latent.squeeze(0)], dim=0)
+        # Handle both batched and single inputs
+        if belief.dim() == 3:  # [batch_size, 1, belief_dim]
+            belief = belief.squeeze(0)
+        if latent.dim() == 3:  # [batch_size, 1, latent_dim]
+            latent = latent.squeeze(0)
+            
+        # For batched inputs
+        if belief.dim() == 2 and latent.dim() == 2:
+            # Combine inputs along feature dimension
+            combined = torch.cat([belief, latent], dim=1)
+        # For single inputs
+        else:
+            # Ensure we have batch dimension
+            if belief.dim() == 1:
+                belief = belief.unsqueeze(0)
+            if latent.dim() == 1:
+                latent = latent.unsqueeze(0)
+            combined = torch.cat([belief, latent], dim=1)
+            
         # Forward pass
         x = F.relu(self.fc1(combined))
         x = F.relu(self.fc2(x))
@@ -208,54 +314,18 @@ class QNetwork(nn.Module):
     
     def forward(self, belief, latent, neighbor_actions=None):
         """Compute Q-values given belief, latent, and neighbor actions."""
-        batch_size = belief.size(0)
+        # Handle different dimensions
+        if belief.dim() == 3:  # [batch_size, 1, belief_dim]
+            belief = belief.squeeze(0)
+        if latent.dim() == 3:  # [batch_size, 1, latent_dim]
+            latent = latent.squeeze(0)
         
-        # Create a tensor to hold all neighbor actions (one-hot encoded)
-        neighbor_actions_one_hot = torch.zeros(batch_size, self.num_agents * self.action_dim, device=self.device)
-        
-        # If neighbor_actions is provided and not None, encode them
-        if neighbor_actions is not None:
-            # If neighbor_actions is a dictionary (for a single batch item)
-            if isinstance(neighbor_actions, dict):
-                # Process each neighbor's action for the first batch item
-                for neighbor_id, action in neighbor_actions.items():
-                    if isinstance(neighbor_id, int) and 0 <= neighbor_id < self.num_agents:
-                        # Calculate the index for this neighbor's action in the one-hot encoding
-                        start_idx = neighbor_id * self.action_dim
-                        # Set the corresponding bit to 1
-                        if isinstance(action, int) and 0 <= action < self.action_dim:
-                            neighbor_actions_one_hot[0, start_idx + action] = 1.0
-            
-            # If neighbor_actions is a list of dictionaries (for multiple batch items)
-            elif isinstance(neighbor_actions, list) and all(isinstance(na, dict) for na in neighbor_actions):
-                for b, na_dict in enumerate(neighbor_actions):
-                    if b < batch_size:  # Ensure we don't exceed batch size
-                        for neighbor_id, action in na_dict.items():
-                            if isinstance(neighbor_id, int) and 0 <= neighbor_id < self.num_agents:
-                                start_idx = neighbor_id * self.action_dim
-                                if isinstance(action, int) and 0 <= action < self.action_dim:
-                                    neighbor_actions_one_hot[b, start_idx + action] = 1.0
-            
-            # If neighbor_actions is a tensor
-            elif isinstance(neighbor_actions, torch.Tensor):
-                if neighbor_actions.dim() == 1:
-                    # Single batch, single action per neighbor
-                    for i, action in enumerate(neighbor_actions):
-                        if i < self.num_agents:
-                            action_idx = action.item()
-                            if 0 <= action_idx < self.action_dim:
-                                neighbor_actions_one_hot[0, i * self.action_dim + action_idx] = 1.0
-                elif neighbor_actions.dim() == 2:
-                    # Multiple batches, single action per neighbor
-                    for b in range(min(batch_size, neighbor_actions.size(0))):
-                        for i, action in enumerate(neighbor_actions[b]):
-                            if i < self.num_agents:
-                                action_idx = action.item()
-                                if 0 <= action_idx < self.action_dim:
-                                    neighbor_actions_one_hot[b, i * self.action_dim + action_idx] = 1.0
-        
+        print(f"QNetwork input shapes - belief: {belief.shape}, latent: {latent.shape}, neighbor_actions: {neighbor_actions.shape if neighbor_actions is not None else None}")
+
         # Combine inputs
-        combined = torch.cat([belief, latent, neighbor_actions_one_hot], dim=1)
+        combined = torch.cat([belief, latent, neighbor_actions], dim=1)
+
+        print(f"Combined input shape: {combined.shape}")
         
         # Forward pass
         x = F.relu(self.fc1(combined))

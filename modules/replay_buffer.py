@@ -13,6 +13,7 @@ class ReplayBuffer:
         self.device = device
         self.sequence_length = sequence_length
         self.buffer = deque(maxlen=capacity)
+        self.belief_dim = belief_dim
         
     def push(self, signal, neighbor_actions, belief, latent, action, reward, 
              next_signal, next_belief, next_latent, mean=None, logvar=None):
@@ -25,49 +26,58 @@ class ReplayBuffer:
         """Backward compatibility method - does nothing in the continuous version."""
         pass
     
-    def sample(self, batch_size, sequence_length=None, mode="sequence"):
-        """Enhanced sampling with multiple modes:
-        - sequence: Sample sequences for GRU training
-        - random: Sample random transitions (FURTHER-style)
-        - all: Return all transitions in order (for temporal KL)
-        """
-        # For sequence-based sampling (GRU training)
+    def __len__(self):
+        return len(self.buffer)
+        
+    def sample(self, batch_size, sequence_length=None, mode="single"):
+        """Sample a batch of transitions or sequences from the buffer."""
         if mode == "sequence":
+            # Sample sequences of transitions
             if sequence_length is None:
                 sequence_length = self.sequence_length
                 
-            # Make sure we have enough transitions
+            # Ensure we have enough transitions
             if len(self.buffer) < sequence_length:
                 return None
                 
-            # Adjust batch size if needed
-            max_possible_sequences = len(self.buffer) - sequence_length + 1
-            batch_size = min(batch_size, max_possible_sequences)
-            
-            # Sample starting indices for sequences
-            start_indices = np.random.choice(max_possible_sequences, batch_size, replace=False)
+            # Sample random starting points
+            start_indices = np.random.randint(0, len(self.buffer) - sequence_length + 1, size=batch_size)
             
             # Extract sequences
             sequences = []
             for start_idx in start_indices:
-                sequence = [self.buffer[start_idx + i] for i in range(sequence_length)]
+                sequence = [self.buffer[i] for i in range(start_idx, start_idx + sequence_length)]
                 sequences.append(sequence)
-            
-            # Process and return sequence batch
+                
             return self._process_sequence_batch(sequences)
-        
-        # For FURTHER-style random sampling
-        elif mode == "random":
-            indices = np.random.randint(0, len(self), size=min(batch_size, len(self)))
-            return self._process_transitions([self.buffer[i] for i in indices])
-            
-        # For temporal KL calculation (all transitions in order)
-        elif mode == "all":
-            # If requesting all but buffer is too small, return what we have
-            return self._process_transitions(list(self.buffer))
-            
         else:
-            raise ValueError(f"Invalid sampling mode: {mode}")
+            # Sample individual transitions
+            if len(self.buffer) < batch_size:
+                return None
+                
+            # Sample indices instead of transitions directly
+            indices = np.random.choice(len(self.buffer), batch_size, replace=False)
+            transitions = [self.buffer[i] for i in indices]
+            return self._process_transitions(transitions)
+    
+    def _standardize_belief_state(self, belief):
+        """Ensure belief state has consistent shape [1, batch_size, hidden_dim]."""
+        if belief is None:
+            return None
+            
+        # Add batch dimension if missing
+        if belief.dim() == 1:  # [hidden_dim]
+            belief = belief.unsqueeze(0)  # [1, hidden_dim]
+            
+        # Add sequence dimension if missing
+        if belief.dim() == 2:  # [batch_size, hidden_dim]
+            belief = belief.unsqueeze(0)  # [1, batch_size, hidden_dim]
+            
+        # Transpose if dimensions are in wrong order
+        if belief.dim() == 3 and belief.size(0) != 1:
+            belief = belief.transpose(0, 1).contiguous()
+            
+        return belief
     
     def _process_transitions(self, transitions):
         """Process a list of transitions into batched tensors."""
@@ -78,17 +88,41 @@ class ReplayBuffer:
         signals, neighbor_actions, beliefs, latents, actions, rewards, \
         next_signals, next_beliefs, next_latents, means, logvars = zip(*transitions)
         
-        
         # For tensors that are already torch tensors, we need to detach them
         signals_list = [s.detach() for s in signals]
         neighbor_actions_list = [na.detach() if isinstance(na, torch.Tensor) else na for na in neighbor_actions]
-        beliefs_list = [b.detach() for b in beliefs]
-        latents_list = [l.detach() for l in latents]
+        
+        # Process belief states to ensure consistent shape [1, batch_size, hidden_dim]
+        beliefs_list = []
+        next_beliefs_list = []
+        for b, nb in zip(beliefs, next_beliefs):
+            # Handle current belief
+            b = self._standardize_belief_state(b.detach())
+            beliefs_list.append(b)
+            
+            # Handle next belief
+            nb = self._standardize_belief_state(nb.detach())
+            next_beliefs_list.append(nb)
+        
+        # Process latent states to ensure consistent shape [1, batch_size, latent_dim]
+        latents_list = []
+        next_latents_list = []
+        for l, nl in zip(latents, next_latents):
+            # Handle current latent
+            if l.dim() == 1:  # [latent_dim]
+                l = l.unsqueeze(0)  # [1, latent_dim]
+            if l.dim() == 2:  # [batch_size, latent_dim]
+                l = l.unsqueeze(0)  # [1, batch_size, latent_dim]
+            latents_list.append(l.detach())
+            
+            # Handle next latent
+            if nl.dim() == 1:  # [latent_dim]
+                nl = nl.unsqueeze(0)  # [1, latent_dim]
+            if nl.dim() == 2:  # [batch_size, latent_dim]
+                nl = nl.unsqueeze(0)  # [1, batch_size, latent_dim]
+            next_latents_list.append(nl.detach())
+        
         next_signals_list = [ns.detach() for ns in next_signals]
-        next_beliefs_list = [nb.detach() for nb in next_beliefs]
-        next_latents_list = [nl.detach() for nl in next_latents]
-
-        print("latents list:", latents_list)
         
         # Handle means and logvars which might be None for older entries
         means_list = []
@@ -98,18 +132,16 @@ class ReplayBuffer:
                 means_list.append(m.detach())
                 logvars_list.append(lv.detach())
         
+        # Stack tensors with consistent shapes
         signals = torch.stack(signals_list).to(self.device)
         neighbor_actions = torch.stack(neighbor_actions_list).to(self.device)
-        beliefs = torch.stack(beliefs_list).to(self.device)
-        latents = torch.stack(latents_list).to(self.device)
+        beliefs = torch.cat([b.view(1, 1, -1) for b in beliefs_list], dim=1).to(self.device)  # Ensure consistent shape
+        latents = torch.cat([l.view(1, 1, -1) for l in latents_list], dim=1).to(self.device)  # Ensure consistent shape
         actions = torch.LongTensor(actions).to(self.device)
-        
-
         rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
-        
         next_signals = torch.stack(next_signals_list).to(self.device)
-        next_beliefs = torch.stack(next_beliefs_list).to(self.device)
-        next_latents = torch.stack(next_latents_list).to(self.device)
+        next_beliefs = torch.cat([nb.view(1, 1, -1) for nb in next_beliefs_list], dim=1).to(self.device)  # Ensure consistent shape
+        next_latents = torch.cat([nl.view(1, 1, -1) for nl in next_latents_list], dim=1).to(self.device)  # Ensure consistent shape
         
         # Only create means and logvars tensors if we have data
         means = torch.cat(means_list).to(self.device) if means_list else None
@@ -150,6 +182,3 @@ class ReplayBuffer:
         logvars_tensor = torch.cat([lv.unsqueeze(0) if lv.dim() == 1 else lv for lv in logvars])
         
         return means_tensor, logvars_tensor
-    
-    def __len__(self):
-        return len(self.buffer)

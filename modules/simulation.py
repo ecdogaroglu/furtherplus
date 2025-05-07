@@ -281,8 +281,7 @@ def update_agent_states(agents, observations, next_observations, actions, reward
                 next_belief,
                 next_latent,
                 mean,
-                logvar,
-                neighbor_actions
+                logvar
             )
             
             # Update networks if enough samples
