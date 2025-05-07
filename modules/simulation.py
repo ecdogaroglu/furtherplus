@@ -217,13 +217,13 @@ def update_agent_states(agents, observations, next_observations, actions, reward
         next_neighbor_actions = next_obs_data['neighbor_actions']
 
         # Encode observations
-        encoded_obs = encode_observation(
+        signal_encoded, actions_encoded = encode_observation(
             signal=signal,
             neighbor_actions=neighbor_actions,
             num_agents=env.num_agents,
             num_states=env.num_states
         )
-        encoded_next_obs = encode_observation(
+        next_signal_encoded, _ = encode_observation(
             signal=next_signal,
             neighbor_actions=next_neighbor_actions,
             num_agents=env.num_agents,
@@ -235,15 +235,15 @@ def update_agent_states(agents, observations, next_observations, actions, reward
         latent = agent.current_latent.detach().clone()
 
         # Update agent belief state
-        next_belief, next_dstr = agent.observe(encoded_obs)
-
+        next_belief, next_dstr = agent.observe(signal_encoded, actions_encoded)
+        print(signal_encoded, actions_encoded)
         # Infer latent state for next observation
         # This ensures we're using the correct latent state for the next observation
         next_latent = agent.infer_latent(
-            encoded_obs,  
-            {n_id: actions[n_id] for n_id in env.get_neighbors(agent_id) if n_id in actions},
+            signal_encoded,
+            actions_encoded,
             rewards[agent_id] if rewards else 0.0,
-            encoded_next_obs 
+            next_signal_encoded
         )
             
         print(f"Step {step}: Agent {agent_id} observed signal {signal} resulting in belief distribution {next_dstr.tolist()}")
@@ -271,12 +271,13 @@ def update_agent_states(agents, observations, next_observations, actions, reward
             # Store transition
             store_transition_in_buffer(
                 replay_buffers[agent_id],
-                encoded_obs,
+                signal_encoded,
+                actions_encoded,
                 belief,
                 latent,
                 actions[agent_id],
                 rewards[agent_id] if rewards else 0.0,
-                encoded_next_obs,
+                next_signal_encoded,
                 next_belief,
                 next_latent,
                 mean,

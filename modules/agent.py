@@ -63,7 +63,6 @@ class FURTHERPlusAgent:
         
         # Initialize all networks as before
         self.belief_processor = GRUBeliefProcessor(
-            input_dim=observation_dim,
             hidden_dim=belief_dim,
             action_dim=action_dim,
             device=device,
@@ -71,7 +70,6 @@ class FURTHERPlusAgent:
         ).to(device)
         
         self.encoder = EncoderNetwork(
-            observation_dim=observation_dim,
             action_dim=action_dim,
             latent_dim=latent_dim,
             hidden_dim=hidden_dim,
@@ -81,11 +79,11 @@ class FURTHERPlusAgent:
         ).to(device)
         
         self.decoder = DecoderNetwork(
-            observation_dim=observation_dim,
             action_dim=action_dim,
             latent_dim=latent_dim,
             hidden_dim=hidden_dim,
             num_agents=num_agents,
+            num_belief_states=num_states,
             device=device
         ).to(device)
         
@@ -182,38 +180,22 @@ class FURTHERPlusAgent:
         # Episode tracking
         self.episode_step = 0
     
-    def observe(self, observation):
+    def observe(self, signal, neighbor_actions):
         """Update belief state based on new observation."""
         # Check if this is the first observation of the episode
         is_first_obs = (self.episode_step == 0)
         self.episode_step += 1
-        
-        # Process the observation
-        observation_tensor = torch.FloatTensor(observation).to(self.device)
-        
-        # Add batch dimension if needed
-        if observation_tensor.dim() == 1:
-            observation_tensor = observation_tensor.unsqueeze(0)
-        
-        # If this is the first observation of an episode, use None to force GRU to initialize fresh
-        current_belief = None if is_first_obs else self.current_belief
-        
+
         # Pass observation and belief to the belief processor
-        new_belief, belief_distribution = self.belief_processor(
-            observation_tensor, 
-            current_belief
+        belief, belief_distribution = self.belief_processor(
+            signal,
+            neighbor_actions, 
+            self.current_belief
         )
-        self.current_belief = new_belief.squeeze(0)
+        self.current_belief = belief
         
-        
-        # Store the belief distribution if available
-        if belief_distribution is not None:
-            self.current_belief_distribution = belief_distribution
-        else:
-            self.current_belief_distribution = None
-        
-        # Reset cached values since belief state has changed
-        self.reset_cache()
+        # Store the belief distribution
+        self.current_belief_distribution = belief_distribution
         
         return self.current_belief, self.current_belief_distribution
         
@@ -266,30 +248,18 @@ class FURTHERPlusAgent:
             if 'bias_hh' in name:  # Reset the bias related to hidden state
                 nn.init.constant_(param, 0)
     
-    def infer_latent(self, observation, actions, reward, next_observation):
-        """Infer latent state of neighbors based on their actions and our own observation."""
-        # Convert to tensors
-        observation_tensor = torch.FloatTensor(observation).to(self.device)
-        if observation_tensor.dim() == 1:
-            observation_tensor = observation_tensor.unsqueeze(0)
-            
-        next_observation_tensor = torch.FloatTensor(next_observation).to(self.device)
-        if next_observation_tensor.dim() == 1:
-            next_observation_tensor = next_observation_tensor.unsqueeze(0)
-        
-        # Convert dictionary of actions to a list in agent ID order
-        actions_list = [actions.get(i, 0) for i in range(self.num_agents)]
-        actions_tensor = torch.tensor([actions_list], dtype=torch.long).to(self.device)
+    def infer_latent(self, signal, neighbor_actions, reward, next_signal):
+        """Infer latent state of neighbors based on our observations which already contain neighbor actions."""
 
         # Convert reward to tensor
-        reward_tensor = torch.tensor([[reward]], dtype=torch.float32).to(self.device)
+        reward_tensor = torch.tensor([[reward]], dtype=torch.float32).to(self.device).squeeze(1)
 
         # Get latent distribution and opponent belief distribution
         mean, logvar, opponent_belief_distribution = self.encoder(
-            observation_tensor,
-            actions_tensor,
+            signal,
+            neighbor_actions,
             reward_tensor,
-            next_observation_tensor,
+            next_signal,
             self.current_latent
         )
         
@@ -299,14 +269,14 @@ class FURTHERPlusAgent:
         new_latent = mean + eps * std
         
         # Store the current latent, mean, logvar, and opponent belief distribution
-        self.current_latent = new_latent
+        self.current_latent = new_latent.unsqueeze(0)
         self.current_mean = mean
         self.current_logvar = logvar
         self.current_opponent_belief_distribution = opponent_belief_distribution
         
         # Compute neighbor action logits using the decoder
         with torch.no_grad():
-            self.neighbor_action_logits = self.decoder(next_observation_tensor, new_latent)
+            self.neighbor_action_logits = self.decoder(next_signal, new_latent)
 
         return new_latent
     
@@ -314,13 +284,11 @@ class FURTHERPlusAgent:
         """Select action based on current belief and latent."""
         # Calculate fresh action logits for action selection
         action_logits = self.policy(self.current_belief, self.current_latent)
-        
         # Store a detached copy for caching
         self.action_logits = action_logits.detach()
-        
+        print(f"Action logits: {action_logits}")
         # Convert to probabilities
-        action_probs = F.softmax(action_logits, dim=1)
-        
+        action_probs = F.softmax(action_logits, dim=0)
         # Store probability of incorrect action for learning rate calculation
         self.action_probs_history.append(action_probs.squeeze(0).detach().cpu().numpy())
         
@@ -352,13 +320,11 @@ class FURTHERPlusAgent:
         # Process each time step in the sequence
         for t, batch in enumerate(batch_sequences):
             # Unpack the batch
-            (observations, beliefs, latents, actions, neighbor_actions, rewards, 
-                next_observations, next_beliefs, next_latents, means, logvars) = batch
-            
+            (signals, neighbor_actions, beliefs, latents, actions,  rewards, next_signals, next_beliefs, next_latents, means, logvars) = batch
             # Update encoder-decoder (inference module)
-            inference_loss = self._update_inference(
+            inference_loss = self._update_inference(signals,
                 neighbor_actions, 
-                next_observations, next_latents,
+                next_signals, next_latents,
                 means, logvars
             )
             total_inference_loss += inference_loss
@@ -369,13 +335,13 @@ class FURTHERPlusAgent:
             total_policy_loss += policy_loss
             
             # Update GRU with advantage
-            gru_loss = self._update_gru(observations, beliefs, latents, actions, advantage)
+            gru_loss = self._update_gru(signals, neighbor_actions, beliefs, latents, actions, advantage)
             total_gru_loss += gru_loss
             
             # Update Q-networks
             critic_loss = self._update_critics(
-                observations, beliefs, latents, actions, neighbor_actions, 
-                rewards, next_observations, next_beliefs, next_latents
+                signals, neighbor_actions, beliefs, latents, actions, neighbor_actions, 
+                rewards, next_signals, next_beliefs, next_latents
             )
             total_critic_loss += critic_loss
         
@@ -391,11 +357,16 @@ class FURTHERPlusAgent:
             'gru_loss': total_gru_loss / sequence_length
         }
     
-    def _update_inference(self, neighbor_actions, next_observations, next_latents, means, logvars):
+    def _update_inference(self, signals, neighbor_actions, next_signals, next_latents, means, logvars):
         """Update inference module with FURTHER-style temporal KL."""
         # Generate fresh neighbor action logits for the batch
-        batch_neighbor_logits = self.decoder(next_observations, next_latents)
+        batch_neighbor_logits = []
+        for signal, next_latent in zip(signals, next_latents):
+            neighbor_logit = self.decoder(signal, next_latent)
+            batch_neighbor_logits.append(neighbor_logit)
         
+        batch_neighbor_logits = torch.stack(batch_neighbor_logits).to(self.device)
+ 
         # Calculate reconstruction loss
         recon_loss = F.cross_entropy(batch_neighbor_logits, neighbor_actions)
         
@@ -513,15 +484,17 @@ class FURTHERPlusAgent:
         Returns:
             Tuple of (policy_loss_value, advantage)
         """
+
+        for belief, latent in zip(beliefs, latents):
         # Generate fresh action logits for the batch
-        action_logits = self.policy(beliefs, latents)
+            action_logits = self.policy(belief.squeeze(1), latent.squeeze(1))
         
-        # Calculate probabilities from the logits
-        action_probs = F.softmax(action_logits, dim=1)
-        log_probs = F.log_softmax(action_logits, dim=1)
-        
-        # Compute entropy
-        entropy = -torch.sum(action_probs * log_probs, dim=1, keepdim=True)
+            # Calculate probabilities from the logits
+            action_probs = F.softmax(action_logits, dim=1)
+            log_probs = F.log_softmax(action_logits, dim=1)
+            
+            # Compute entropy
+            entropy = -torch.sum(action_probs * log_probs, dim=1, keepdim=True)
         
         # Get Q-values
         with torch.no_grad():

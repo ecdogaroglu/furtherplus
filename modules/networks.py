@@ -5,18 +5,18 @@ from modules.utils import get_best_device
 
 class GRUBeliefProcessor(nn.Module):
     """GRU-based belief state processor for FURTHER+."""
-    def __init__(self, input_dim, hidden_dim, action_dim, device=None, num_belief_states=None):
+    def __init__(self, hidden_dim, action_dim, device=None, num_belief_states=None):
         # Use the best available device if none is specified
 
         super(GRUBeliefProcessor, self).__init__()
         self.device = device
         self.hidden_dim = hidden_dim
-        self.input_dim = input_dim
+        self.input_dim = action_dim* num_belief_states + num_belief_states
         self.action_dim = action_dim
         self.num_belief_states = num_belief_states
         
         # GRU for processing observation history
-        self.gru = nn.GRU(input_dim, hidden_dim, batch_first=True)
+        self.gru = nn.GRU(self.input_dim, hidden_dim, batch_first=True)
         
         # Initialize parameters
         for name, param in self.gru.named_parameters():
@@ -31,39 +31,30 @@ class GRUBeliefProcessor(nn.Module):
         nn.init.constant_(self.belief_head.bias, 0)
 
     
-    def forward(self, observation, current_belief=None):
+    def forward(self, signal, neighbor_actions, current_belief=None):
         """Update belief state based on new observation and action."""
         # If no previous belief, initialize with zeros
         if current_belief is None:
             current_belief = torch.zeros(1, 1, self.hidden_dim, device=self.device)
-        
-        # Ensure observation has batch dimension
-        if observation.dim() == 1:
-            observation = observation.unsqueeze(0)
-        
-        # Add sequence dimension
-        observation = observation.unsqueeze(1)
-        print(f"Observation: {observation.tolist()}")
-        # Ensure current_belief has correct dimensions [num_layers=1, batch_size, hidden_dim]
-        if current_belief.dim() == 2:
-            current_belief = current_belief.unsqueeze(0)
+
+        combined = torch.cat([
+            signal,
+            neighbor_actions,
+        ], dim=0).unsqueeze(0)  # Add batch dimension
         
         # Process through GRU
-        _, new_belief = self.gru(observation, current_belief)
+        _, new_belief = self.gru(combined, current_belief)
         
         # Calculate belief distribution 
-        # Extract the belief state (remove the first dimension which is num_layers)
-        belief_for_head = new_belief.squeeze(0)
         # Pass through linear layer and apply softmax
-        logits = self.belief_head(belief_for_head)
-        temperature = 0.1  # Temperature for softmax
+        logits = self.belief_head(new_belief.squeeze(0))
+        temperature = 0.5  # Temperature for softmax
         belief_distribution = F.softmax(logits/temperature, dim=-1)
-        print(f"Belief Distribution: {belief_distribution.tolist()}")
         return new_belief, belief_distribution
     
 class EncoderNetwork(nn.Module):
     """Encoder network for inference of other agents' policies."""
-    def __init__(self, observation_dim, action_dim, latent_dim, hidden_dim, num_agents, device=None, num_belief_states=None):
+    def __init__(self, action_dim, latent_dim, hidden_dim, num_agents, device=None, num_belief_states=None):
         # Use the best available device if none is specified
 
         super(EncoderNetwork, self).__init__()
@@ -73,7 +64,7 @@ class EncoderNetwork(nn.Module):
         self.num_belief_states = num_belief_states
         
         # Combined input: observation, actions, reward, next_obs and current latent
-        input_dim = observation_dim + action_dim * num_agents + 1 + observation_dim + latent_dim
+        input_dim = num_belief_states + action_dim * num_agents + 1 + num_belief_states + latent_dim
         
         # Encoder network layers
         self.fc1 = nn.Linear(input_dim, hidden_dim)
@@ -93,45 +84,19 @@ class EncoderNetwork(nn.Module):
         nn.init.constant_(self.opponent_belief_head.bias, 0)
 
     
-    def forward(self, observation, actions, reward, next_observation, current_latent):
+    def forward(self, signal, actions, reward, next_signal, current_latent):
         """Encode the state into a latent distribution."""
-        # Handle actions tensor which could be 2D [batch, num_agents]
-        batch_size = observation.size(0)
-        
-        # For compatibility with the network initialization, we need to ensure
-        # actions_one_hot has shape [batch, num_agents*action_dim]
-        if isinstance(actions, dict):
-            # Convert dictionary to tensor
-            actions_list = [actions.get(i, 0) for i in range(self.num_agents)]
-            actions = torch.tensor([actions_list], dtype=torch.long).to(self.device)
-        
-        # Ensure actions has the right shape
-        if actions.dim() == 1:
-            # Single action, expand to [batch, 1]
-            actions = actions.unsqueeze(0) if batch_size == 1 else actions.unsqueeze(1)
-        
-        # Create a fixed-size one-hot tensor for all agents
-        # If we have fewer agents than expected, pad with zeros
-        actions_one_hot = torch.zeros(batch_size, self.num_agents * self.action_dim, device=self.device)
-        
-        # Fill in the one-hot encodings for the available agents
-        for i in range(min(actions.size(1), self.num_agents)):
-            agent_actions = actions[:, i]
-            for b in range(batch_size):
-                action_idx = agent_actions[b].item()
-                if 0 <= action_idx < self.action_dim:
-                    # Set the corresponding one-hot bit
-                    one_hot_idx = i * self.action_dim + action_idx
-                    actions_one_hot[b, one_hot_idx] = 1.0
-        
+
+        current_latent = current_latent.squeeze(0) 
+        # Ensure current_latent has the correct shape
         # Combine inputs
         combined = torch.cat([
-            observation,
-            actions_one_hot,
+            signal,
+            actions,
             reward,
-            next_observation,
+            next_signal,
             current_latent
-        ], dim=1)
+        ], dim=0)
         
         # Forward pass
         x = F.relu(self.fc1(combined))
@@ -148,7 +113,7 @@ class EncoderNetwork(nn.Module):
 
 class DecoderNetwork(nn.Module):
     """Decoder network for predicting other agents' actions."""
-    def __init__(self, observation_dim, action_dim, latent_dim, hidden_dim, num_agents, device=None):
+    def __init__(self, action_dim, latent_dim, hidden_dim, num_agents, num_belief_states, device=None):
         # Use the best available device if none is specified
         if device is None:
             device = get_best_device()
@@ -157,7 +122,7 @@ class DecoderNetwork(nn.Module):
         self.action_dim = action_dim
         
         # Combined input: observation and latent
-        input_dim = observation_dim + latent_dim
+        input_dim = num_belief_states + latent_dim
         
         # Decoder network layers
         self.fc1 = nn.Linear(input_dim, hidden_dim)
@@ -169,10 +134,10 @@ class DecoderNetwork(nn.Module):
         nn.init.xavier_normal_(self.fc2.weight)
         nn.init.xavier_normal_(self.fc3.weight)
     
-    def forward(self, observation, latent):
+    def forward(self, signal, latent):
         """Predict peer actions from observation and latent."""
         # Combine inputs
-        combined = torch.cat([observation, latent], dim=1)
+        combined = torch.cat([signal, latent], dim=0)
         
         # Forward pass
         x = F.relu(self.fc1(combined))
@@ -207,8 +172,8 @@ class PolicyNetwork(nn.Module):
     def forward(self, belief, latent):
         """Compute action logits given belief and latent."""
         # Combine inputs
-        combined = torch.cat([belief, latent], dim=1)
-        
+
+        combined = torch.cat([belief.squeeze(0), latent.squeeze(0)], dim=0)
         # Forward pass
         x = F.relu(self.fc1(combined))
         x = F.relu(self.fc2(x))

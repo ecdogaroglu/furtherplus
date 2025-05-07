@@ -27,10 +27,10 @@ def encode_observation(
         encoded_obs: Encoded observation as a fixed-size vector
     """
     # One-hot encode the signal
-    signal_one_hot = np.zeros(num_states)
+    signal_one_hot = torch.zeros(num_states)
     signal_one_hot[signal] = 1.0
     # Encode neighbor actions (one-hot per neighbor)
-    action_encoding = np.zeros(num_agents * num_states)
+    action_encoding = torch.zeros(num_agents * num_states)
     
     if neighbor_actions is not None:  # First step has no neighbor actions
         for neighbor_id, action in neighbor_actions.items():
@@ -38,12 +38,9 @@ def encode_observation(
             start_idx = neighbor_id * num_states
             # One-hot encode the action
             action_encoding[start_idx + action] = 1.0
-    
-    # Concatenate signal and action encodings
-    encoded_obs = np.concatenate([signal_one_hot, action_encoding])
 
-    
-    return encoded_obs
+
+    return signal_one_hot, action_encoding
 
 def calculate_learning_rate(mistake_history: List[float]) -> float:
     """
@@ -352,21 +349,21 @@ def update_total_rewards(total_rewards, rewards):
 
 
 
-def store_transition_in_buffer(buffer, obs, belief, latent, action, reward, next_obs, 
+def store_transition_in_buffer(buffer, signal, neigbor_actions, belief, latent, action, reward, next_signal, 
                               next_belief, next_latent, mean, logvar, neighbor_actions):
     """Store a transition in the replay buffer."""
     buffer.push(
-        observation=obs,
+        signal=signal,
+        neighbor_actions=neigbor_actions,
         belief=belief,
         latent=latent,
         action=action,
         reward=reward,
-        next_observation=next_obs,
+        next_signal=next_signal,
         next_belief=next_belief,
         next_latent=next_latent,
         mean=mean,
-        logvar=logvar,
-        neighbor_actions=neighbor_actions
+        logvar=logvar
     )
 
 

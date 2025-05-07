@@ -14,11 +14,11 @@ class ReplayBuffer:
         self.sequence_length = sequence_length
         self.buffer = deque(maxlen=capacity)
         
-    def push(self, observation, belief, latent, action, reward, 
-             next_observation, next_belief, next_latent, mean=None, logvar=None, neighbor_actions=None):
+    def push(self, signal, neighbor_actions, belief, latent, action, reward, 
+             next_signal, next_belief, next_latent, mean=None, logvar=None):
         """Save a transition to the buffer."""
-        transition = (observation, belief, latent, action, neighbor_actions, reward, 
-                     next_observation, next_belief, next_latent, mean, logvar)
+        transition = (signal, neighbor_actions, belief, latent, action, reward, 
+                     next_signal, next_belief, next_latent, mean, logvar)
         self.buffer.append(transition)
     
     def end_trajectory(self):
@@ -75,33 +75,20 @@ class ReplayBuffer:
             return None
             
         # Unpack transitions
-        observations, beliefs, latents, actions, neighbor_actions, rewards, \
-        next_observations, next_beliefs, next_latents, means, logvars = zip(*transitions)
+        signals, neighbor_actions, beliefs, latents, actions, rewards, \
+        next_signals, next_beliefs, next_latents, means, logvars = zip(*transitions)
         
-        # Convert to tensors
-        # Handle both numpy arrays and torch tensors
-        observations_list = []
-        for obs in observations:
-            if isinstance(obs, np.ndarray):
-                # Convert numpy array to tensor
-                obs_tensor = torch.FloatTensor(obs)
-                if obs.ndim == 1:
-                    obs_tensor = obs_tensor.unsqueeze(0)
-                observations_list.append(obs_tensor)
-            else:
-                # It's already a tensor
-                if obs.dim() == 1:
-                    observations_list.append(obs.unsqueeze(0))
-                else:
-                    observations_list.append(obs)
-        
-        observations = torch.cat(observations_list)
         
         # For tensors that are already torch tensors, we need to detach them
+        signals_list = [s.detach() for s in signals]
+        neighbor_actions_list = [na.detach() if isinstance(na, torch.Tensor) else na for na in neighbor_actions]
         beliefs_list = [b.detach() for b in beliefs]
         latents_list = [l.detach() for l in latents]
+        next_signals_list = [ns.detach() for ns in next_signals]
         next_beliefs_list = [nb.detach() for nb in next_beliefs]
         next_latents_list = [nl.detach() for nl in next_latents]
+
+        print("latents list:", latents_list)
         
         # Handle means and logvars which might be None for older entries
         means_list = []
@@ -111,50 +98,25 @@ class ReplayBuffer:
                 means_list.append(m.detach())
                 logvars_list.append(lv.detach())
         
-        beliefs = torch.cat(beliefs_list).to(self.device)
-        latents = torch.cat(latents_list).to(self.device)
+        signals = torch.stack(signals_list).to(self.device)
+        neighbor_actions = torch.stack(neighbor_actions_list).to(self.device)
+        beliefs = torch.stack(beliefs_list).to(self.device)
+        latents = torch.stack(latents_list).to(self.device)
         actions = torch.LongTensor(actions).to(self.device)
         
-        # Handle neighbor_actions which might be None or a dictionary
-        if all(na is None for na in neighbor_actions):
-            # If all neighbor_actions are None, create a tensor of zeros
-            neighbor_actions_tensor = torch.zeros(len(actions), dtype=torch.long).to(self.device)
-        elif any(isinstance(na, dict) for na in neighbor_actions):
-            # If any neighbor_actions are dictionaries, process them accordingly
-            neighbor_actions_tensor = self._process_neighbor_actions_dict(neighbor_actions)
-        else:
-            # Replace None values with 0 (or another default value)
-            neighbor_actions_list = [0 if na is None else na for na in neighbor_actions]
-            neighbor_actions_tensor = torch.LongTensor(neighbor_actions_list).to(self.device)
-                
+
         rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
         
-        # Handle next_observations the same way as observations
-        next_observations_list = []
-        for obs in next_observations:
-            if isinstance(obs, np.ndarray):
-                # Convert numpy array to tensor
-                obs_tensor = torch.FloatTensor(obs)
-                if obs.ndim == 1:
-                    obs_tensor = obs_tensor.unsqueeze(0)
-                next_observations_list.append(obs_tensor)
-            else:
-                # It's already a tensor
-                if obs.dim() == 1:
-                    next_observations_list.append(obs.unsqueeze(0))
-                else:
-                    next_observations_list.append(obs)
-        
-        next_observations = torch.cat(next_observations_list)
-        next_beliefs = torch.cat(next_beliefs_list).to(self.device)
-        next_latents = torch.cat(next_latents_list).to(self.device)
+        next_signals = torch.stack(next_signals_list).to(self.device)
+        next_beliefs = torch.stack(next_beliefs_list).to(self.device)
+        next_latents = torch.stack(next_latents_list).to(self.device)
         
         # Only create means and logvars tensors if we have data
         means = torch.cat(means_list).to(self.device) if means_list else None
         logvars = torch.cat(logvars_list).to(self.device) if logvars_list else None
         
-        return (observations, beliefs, latents, actions, neighbor_actions_tensor, rewards,
-                next_observations, next_beliefs, next_latents, means, logvars)
+        return (signals, neighbor_actions, beliefs, latents, actions, rewards,
+                next_signals, next_beliefs, next_latents, means, logvars)
     
     def _process_sequence_batch(self, sequences):
         """Process a batch of sequences for GRU training."""
@@ -170,22 +132,6 @@ class ReplayBuffer:
             batch_data.append(time_step_data)
         
         return batch_data
-    
-    def _process_neighbor_actions_dict(self, neighbor_actions_dicts):
-        """Process neighbor_actions when they are dictionaries."""
-        batch_size = len(neighbor_actions_dicts)
-        # Create a tensor to hold the result
-        result = torch.zeros(batch_size, dtype=torch.long).to(self.device)
-        
-        # For each sample in the batch
-        for i, na_dict in enumerate(neighbor_actions_dicts):
-            # If it's a valid dictionary with values, use the first value
-            if isinstance(na_dict, dict) and len(na_dict) > 0:
-                # Get the first agent's action
-                first_agent = next(iter(na_dict))
-                result[i] = na_dict[first_agent]
-        
-        return result
 
     def get_sequential_latent_params(self):
         """Get all means and logvars in chronological order for temporal KL calculation."""
