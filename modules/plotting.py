@@ -12,8 +12,9 @@ from scipy import stats
 
 from modules.metrics import process_incorrect_probabilities, print_debug_info_for_plotting
 from modules.utils import calculate_learning_rate
+from modules.latex_mplstyle import set_latex_style, format_axis_in_latex_style, save_figure_for_publication
 
-def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=None):
+def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=None, use_latex=False):
     """
     Generate plots from experiment results.
     
@@ -24,7 +25,11 @@ def generate_plots(metrics, env, args, output_dir, training, episodic_metrics=No
         output_dir: Directory to save plots
         training: Whether this is training or evaluation
         episodic_metrics: Optional dictionary with episode-separated metrics
+        use_latex: Whether to use LaTeX rendering for text (requires LaTeX installation)
     """
+    # Apply LaTeX-style formatting to all plots
+    set_latex_style(use_tex=use_latex)
+    
     # Process incorrect probabilities for plotting
     agent_incorrect_probs = process_incorrect_probabilities(metrics, env.num_agents)
     
@@ -132,15 +137,22 @@ def plot_mean_incorrect_action_probabilities_with_ci(
     
     agent_ids = list(episodes[0]['action_probs'].keys())
     
-    # Create figure
-    plt.figure(figsize=(12, 8))
+    # Create figure with LaTeX-style dimensions (golden ratio)
+    fig_width = 8  # Width suitable for single-column journal format
+    fig_height = fig_width * 0.618  # Golden ratio
     
-    # Define a colormap for different agents
-    colors = plt.cm.tab10(np.linspace(0, 1, len(agent_ids)))
+    # Create figure
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
+    
+    # Apply LaTeX-style formatting to the axis
+    format_axis_in_latex_style(ax)
+    
+    # Get colors from the LaTeX-style color cycle
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     
     # For each agent, collect data across episodes and calculate mean and CI
     for i, agent_id in enumerate(sorted(agent_ids, key=int)):
-        agent_color = colors[i]
+        agent_color = colors[i % len(colors)]  # Cycle through colors if more agents than colors
         
         # Collect data for this agent across all episodes
         # We need to ensure all episodes have the same length for this agent
@@ -167,24 +179,35 @@ def plot_mean_incorrect_action_probabilities_with_ci(
         # Create time steps array
         time_steps = np.arange(min_length)
         
-        # Plot mean line
-        if log_scale:
-            line, = plt.semilogy(time_steps, mean_probs, 
-                              label=f"Agent {agent_id}",
-                              color=agent_color,
-                              linewidth=2)
-        else:
-            line, = plt.plot(time_steps, mean_probs, 
-                          label=f"Agent {agent_id}",
-                          color=agent_color,
-                          linewidth=2)
+        # Plot mean line with markers at regular intervals
+        marker_interval = max(1, min_length // 10)  # Show about 10 markers
         
-        # Plot confidence interval
-        plt.fill_between(time_steps, 
-                         mean_probs - ci, 
-                         mean_probs + ci, 
-                         color=agent_color, 
-                         alpha=0.2)
+        if log_scale:
+            line, = ax.semilogy(time_steps, mean_probs, 
+                             label=f"Agent {agent_id}",
+                             color=agent_color,
+                             linewidth=1.5,
+                             marker='o',
+                             markersize=3,
+                             markevery=marker_interval)
+        else:
+            line, = ax.plot(time_steps, mean_probs, 
+                         label=f"Agent {agent_id}",
+                         color=agent_color,
+                         linewidth=1.5,
+                         marker='o',
+                         markersize=3,
+                         markevery=marker_interval)
+        
+        # Plot confidence interval with more elegant styling
+        ax.fill_between(time_steps, 
+                      mean_probs - ci, 
+                      mean_probs + ci, 
+                      color=agent_color, 
+                      alpha=0.15,
+                      edgecolor=agent_color,
+                      linewidth=0.5,
+                      linestyle=':')
         
         # Calculate and display learning rate for the mean curve
         if len(mean_probs) >= 10:
@@ -193,53 +216,60 @@ def plot_mean_incorrect_action_probabilities_with_ci(
             # Update the label with learning rate
             line.set_label(f"Agent {agent_id} (r = {learning_rate:.4f})")
             
-            # Plot fitted exponential decay
+            # Plot fitted exponential decay with more elegant styling
             x = np.arange(len(mean_probs))
             initial_value = mean_probs[0]
             y = np.exp(-learning_rate * x) * initial_value
             
             if log_scale:
-                plt.semilogy(x, y, '--', alpha=0.5, color=line.get_color())
+                ax.semilogy(x, y, '--', alpha=0.5, color=line.get_color(), linewidth=0.8)
             else:
-                plt.plot(x, y, '--', alpha=0.5, color=line.get_color())
+                ax.plot(x, y, '--', alpha=0.5, color=line.get_color(), linewidth=0.8)
     
-    # Set labels and grid
-    plt.xlabel("Time Steps")
-    plt.ylabel("Incorrect Action Probability" + (" (log scale)" if log_scale else ""))
-    plt.grid(True, which="both" if log_scale else "major", ls="--", alpha=0.7)
+    # Set labels with LaTeX-style formatting
+    ax.set_xlabel("Time Steps")
+    ax.set_ylabel("Incorrect Action Probability" + (" (log scale)" if log_scale else ""))
     
     # Set y-axis limits for better visualization
     if log_scale:
-        plt.ylim(0.001, 1.0)
+        ax.set_ylim(0.001, 1.0)
     else:
-        plt.ylim(0, 1.0)
+        ax.set_ylim(0, 1.0)
     
-    # Add legend
-    plt.legend(loc='best')
+    # Add legend with LaTeX-style formatting
+    ax.legend(loc='best', framealpha=0.9, edgecolor='black', fancybox=False)
     
-    # Set title
-    plt.title(title)
+    # Set title with LaTeX-style formatting
+    ax.set_title(title)
     
-    # Add text about number of episodes
-    plt.figtext(0.01, 0.01, f"Based on {num_episodes} episodes", fontsize=10, 
-               bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
+    # Add text about number of episodes with LaTeX-style formatting
+    fig.text(0.01, 0.01, f"Based on {num_episodes} episodes", fontsize=9, 
+            bbox=dict(facecolor='white', alpha=0.9, edgecolor='black', boxstyle='round,pad=0.5'))
     
-    plt.tight_layout()
-    
+    # Save the figure in publication-quality formats
     if save_path:
         try:
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
             
-            # Save the figure
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved mean incorrect action probabilities plot with CI to {save_path}")
+            # Get base filename without extension
+            base_path = os.path.splitext(save_path)[0]
+            
+            # Save in multiple formats for publication
+            save_figure_for_publication(
+                fig=fig,
+                filename=base_path,
+                dpi=300,
+                formats=['pdf', 'png']
+            )
+            
+            plt.close()
         except Exception as e:
             print(f"Error saving plot: {e}")
+            plt.close()
     else:
         plt.show()
-    
-    plt.close()
+        plt.close()
 
 
 def generate_internal_state_plots(metrics, env, args, output_dir, episode_num=None):
@@ -339,16 +369,21 @@ def plot_incorrect_action_probabilities(
     num_rows = (num_episodes + 1) // 2  # Ceiling division to get number of rows
     num_cols = min(2, num_episodes)  # At most 2 columns
     
-    fig_width = 12  # Fixed width for 2 columns
-    fig_height = 5 * num_rows  # Height scales with number of rows
+    # Use LaTeX-style figure dimensions (golden ratio)
+    if num_cols == 1:
+        fig_width = 6  # Single column width for publications
+    else:
+        fig_width = 10  # Two-column width for publications
     
-    # Create figure and subplots
+    fig_height = fig_width * (num_rows / num_cols) * 0.75  # Approximate golden ratio
+    
+    # Create figure and subplots with constrained layout for better spacing
     fig, axes = plt.subplots(nrows=num_rows, ncols=num_cols, figsize=(fig_width, fig_height), 
-                            sharey=True, squeeze=False)
+                            sharey=True, squeeze=False, constrained_layout=True)
     axes = axes.flatten()  # Flatten to make indexing easier
     
-    # Define a colormap for different agents
-    colors = plt.cm.tab10(np.linspace(0, 1, len(incorrect_probs)))
+    # Define a scientific color scheme suitable for publications
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     
     # Store learning rates for each agent across episodes
     learning_rates = {agent_id: [] for agent_id in incorrect_probs.keys()}
@@ -357,8 +392,11 @@ def plot_incorrect_action_probabilities(
     for episode in range(num_episodes):
         ax = axes[episode]
         
-        # Set subplot title
-        ax.set_title(f"Episode {episode+1}")
+        # Apply LaTeX-style formatting to this subplot
+        format_axis_in_latex_style(ax)
+        
+        # Set subplot title with LaTeX-style formatting
+        ax.set_title(f"Episode {episode+1}", fontsize=11)
         
         # Calculate start and end indices for this episode
         start_idx = episode * episode_length
@@ -366,7 +404,7 @@ def plot_incorrect_action_probabilities(
         
         # Plot each agent's data for this episode
         for i, (agent_id, probs) in enumerate(sorted(incorrect_probs.items())):
-            agent_color = colors[i]
+            agent_color = colors[i % len(colors)]  # Cycle through colors if more agents than colors
             
             # Skip if we're out of data for this agent
             if start_idx >= len(probs):
@@ -384,12 +422,18 @@ def plot_incorrect_action_probabilities(
                 line, = ax.semilogy(time_steps, episode_probs, 
                                   label=label,
                                   color=agent_color,
-                                  linewidth=2)
+                                  linewidth=1.5,
+                                  marker='o',
+                                  markersize=3,
+                                  markevery=max(1, len(episode_probs)//10))  # Show markers at regular intervals
             else:
                 line, = ax.plot(time_steps, episode_probs, 
                               label=label,
                               color=agent_color,
-                              linewidth=2)
+                              linewidth=1.5,
+                              marker='o',
+                              markersize=3,
+                              markevery=max(1, len(episode_probs)//10))  # Show markers at regular intervals
             
             # Calculate and display learning rate if requested
             if show_learning_rates and len(episode_probs) >= 10:
@@ -425,8 +469,8 @@ def plot_incorrect_action_probabilities(
         # Add legend to each subplot
         ax.legend(loc='best', fontsize='small')
     
-    # Set a common title for the entire figure
-    fig.suptitle(title, fontsize=16)
+    # Set a common title for the entire figure with LaTeX-style formatting
+    fig.suptitle(title, fontsize=13, y=1.02)
     
     # Add a text box with average learning rates across episodes
     if show_learning_rates and num_episodes > 1:
@@ -436,20 +480,31 @@ def plot_incorrect_action_probabilities(
                 avg_rate = np.mean(rates)
                 avg_rates_text += f"Agent {agent_id}: {avg_rate:.4f}\n"
         
-        # Add text box to the figure
-        fig.text(0.01, 0.01, avg_rates_text, fontsize=10, 
-                 bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
+        # Add text box to the figure with LaTeX-style formatting
+        fig.text(0.01, 0.01, avg_rates_text, fontsize=9, 
+                 bbox=dict(facecolor='white', alpha=0.9, edgecolor='black', boxstyle='round,pad=0.5'))
     
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Adjust layout to make room for suptitle
+    # Handle unused subplots
+    for i in range(num_episodes, len(axes)):
+        axes[i].set_visible(False)
     
+    # Save the figure in publication-quality formats
     if save_path:
         try:
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
             
-            # Save the figure
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved incorrect action probabilities plot to {save_path}")
+            # Get base filename without extension
+            base_path = os.path.splitext(save_path)[0]
+            
+            # Save in multiple formats for publication
+            save_figure_for_publication(
+                fig=fig,
+                filename=base_path,
+                dpi=300,
+                formats=['pdf', 'png']
+            )
+            
             plt.close()
         except Exception as e:
             print(f"Error saving plot to {save_path}: {e}")
@@ -617,47 +672,75 @@ def plot_agent_actions(actions, true_states, title, save_path=None, episode_leng
     num_agents_to_plot = min(8, len(agent_ids))
     selected_agents = agent_ids[:num_agents_to_plot]
     
+    # Create figure with LaTeX-style dimensions (golden ratio)
+    fig_width = 8  # Width suitable for single-column journal format
+    fig_height = fig_width * 0.618  # Golden ratio
+    
     # Create figure
-    plt.figure(figsize=(12, 8))
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
     
-    # Plot true state
+    # Apply LaTeX-style formatting to the axis
+    format_axis_in_latex_style(ax)
+    
+    # Get colors from the LaTeX-style color cycle
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    
+    # Plot true state with improved styling
     if true_states:
-        plt.plot(true_states, 'k-', linewidth=2, label='True State')
+        ax.plot(true_states, '-', linewidth=1.5, label='True State', color='black', 
+               marker='s', markersize=3, markevery=max(1, len(true_states)//15))
     
-    # Plot actions for each agent
-    for agent_id in selected_agents:
+    # Plot actions for each agent with improved styling
+    for i, agent_id in enumerate(selected_agents):
         agent_actions = actions[agent_id]
         if agent_actions:
-            plt.plot(agent_actions, 'o-', markersize=3, alpha=0.7, label=f'Agent {agent_id}')
+            agent_color = colors[i % len(colors)]  # Cycle through colors if more agents than colors
+            marker_style = ['o', 's', '^', 'v', 'D', 'p', '*', 'x'][i % 8]  # Different markers for each agent
+            
+            ax.plot(agent_actions, marker=marker_style, markersize=3, alpha=0.8, 
+                   label=f'Agent {agent_id}', color=agent_color, linewidth=1.2,
+                   markevery=max(1, len(agent_actions)//15))  # Show fewer markers for clarity
     
     # Add episode boundaries if episode_length is provided
     if episode_length and num_episodes > 1:
         for ep in range(1, num_episodes):
-            plt.axvline(x=ep*episode_length, color='gray', linestyle='--', alpha=0.7)
+            ax.axvline(x=ep*episode_length, color='gray', linestyle='--', alpha=0.5, linewidth=0.8)
     
-    # Set labels and title
-    plt.xlabel('Time Step')
-    plt.ylabel('Action / State')
-    plt.title(title)
-    plt.legend(loc='best')
-    plt.grid(True, alpha=0.3)
+    # Set labels and title with LaTeX-style formatting
+    ax.set_xlabel('Time Step')
+    ax.set_ylabel('Action / State')
+    ax.set_title(title)
+    
+    # Add legend with LaTeX-style formatting
+    ax.legend(loc='best', framealpha=0.9, edgecolor='black', fancybox=False)
     
     # Set y-ticks to match state indices if we can determine the number of states
     if true_states:
         num_states = max(true_states) + 1
-        plt.yticks(range(num_states), [f'State {s}' for s in range(num_states)])
+        ax.set_yticks(range(num_states))
+        ax.set_yticklabels([f'State {s}' for s in range(num_states)])
     
+    # Save the figure in publication-quality formats
     if save_path:
         try:
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
             
-            # Save the figure
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"Saved agent actions plot to {save_path}")
+            # Get base filename without extension
+            base_path = os.path.splitext(save_path)[0]
+            
+            # Save in multiple formats for publication
+            save_figure_for_publication(
+                fig=fig,
+                filename=base_path,
+                dpi=300,
+                formats=['pdf', 'png']
+            )
+            
             plt.close()
         except Exception as e:
             print(f"Error saving plot to {save_path}: {e}")
             plt.close()
     else:
         plt.show()
+        plt.close()

@@ -122,8 +122,16 @@ def run_agents(env, args, training=True, model_path=None):
     if training and args.save_model:
         save_final_models(agents, output_dir)
     
-    # Generate plots
-    generate_plots(combined_metrics, env, args, output_dir, training, episodic_metrics)
+    # Generate plots with LaTeX style if requested
+    generate_plots(
+        combined_metrics, 
+        env, 
+        args, 
+        output_dir, 
+        training, 
+        episodic_metrics,
+        use_latex=args.use_tex if hasattr(args, 'use_tex') else False
+    )
     
     return learning_rates, serializable_metrics
 

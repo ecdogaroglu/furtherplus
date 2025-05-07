@@ -62,6 +62,10 @@ def parse_args():
                         help='Generate detailed visualizations of internal states (belief, latent, decision boundaries)')
     parser.add_argument('--plot-type', type=str, default='both', choices=['belief', 'latent', 'both'],
                         help='Type of internal state to plot (belief, latent, or both)')
+    parser.add_argument('--latex-style', action='store_true',
+                        help='Use LaTeX-style formatting for plots (publication quality)')
+    parser.add_argument('--use-tex', action='store_true',
+                        help='Use actual LaTeX rendering for text in plots (requires LaTeX installation)')
     
     args = parser.parse_args()
     

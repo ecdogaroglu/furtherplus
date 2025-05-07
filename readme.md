@@ -62,6 +62,12 @@ python experiment.py --eval-only --load-model --plot-internal-states --plot-type
 
 # Visualize both belief and latent states (default)
 python experiment.py --eval-only --load-model --plot-internal-states --plot-type both
+
+# Use LaTeX-style formatting for publication-quality plots
+python experiment.py --eval-only --load-model --latex-style
+
+# Use actual LaTeX rendering for text in plots (requires LaTeX installation)
+python experiment.py --eval-only --load-model --latex-style --use-tex
 ```
 
 ### Visualization Types
@@ -70,6 +76,17 @@ python experiment.py --eval-only --load-model --plot-internal-states --plot-type
 2. **Latent States**: Visualizes the evolution of agent latent states over time
 3. **Policy vs. Internal States**: Shows how policy outputs relate to internal state fluctuations
 4. **Decision Boundaries**: Uses PCA to project high-dimensional belief and latent states into 2D/3D space, coloring points by action probabilities to visualize decision boundaries
+
+### Publication-Quality Plots
+
+The `--latex-style` option enables publication-quality plotting with:
+
+- Professional color schemes suitable for academic publications
+- Improved typography and layout following LaTeX conventions
+- Consistent styling across all plots
+- Optimized figure dimensions based on the golden ratio
+- Output in both PDF and PNG formats for easy inclusion in papers
+- Optional LaTeX rendering for mathematical symbols with `--use-tex`
 
 ## Command Line Arguments
 
@@ -83,6 +100,8 @@ python experiment.py --eval-only --load-model --plot-internal-states --plot-type
 | `--latent-dim` | Latent space dimension | 16 |
 | `--plot-internal-states` | Enable internal state visualizations | False |
 | `--plot-type` | Type of internal state to plot (belief, latent, both) | both |
+| `--latex-style` | Use LaTeX-style formatting for publication-quality plots | False |
+| `--use-tex` | Use actual LaTeX rendering for text in plots (requires LaTeX installation) | False |
 | `--eval-only` | Run evaluation only (no training) | False |
 | `--load-model` | Load pre-trained model | False |
 | `--save-model` | Save model after training | True |
