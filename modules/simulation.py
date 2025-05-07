@@ -223,16 +223,8 @@ def update_agent_states(agents, observations, next_observations, actions, reward
         signal_one_hot = np.zeros(env.num_states)
         signal_one_hot[signal] = 1.0
         # Update agent belief state
-        _, dstr = agent.observe(signal_one_hot)
+        _, dstr = agent.observe(encoded_obs)
         print(f"Step {step}: Agent {agent_id} observed signal {signal} resulting in belief distribution {dstr.tolist()}")
-        
-        # Print belief distributions after each step
-        if step < 3:  # Only print for the first few steps to avoid too much output
-            belief_dist = agent.get_belief_distribution()
-            print(f"Step {step}, Agent {agent_id} belief distribution: {belief_dist.detach().cpu().numpy()}")
-            
-            opponent_belief_dist = agent.get_opponent_belief_distribution()
-            print(f"Step {step}, Agent {agent_id} opponent belief distribution: {opponent_belief_dist.detach().cpu().numpy()}")
         
         # Store internal states for visualization if requested (for both training and evaluation)
         if args.plot_internal_states and 'belief_states' in metrics:
