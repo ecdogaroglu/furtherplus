@@ -229,12 +229,24 @@ def update_agent_states(agents, observations, next_observations, actions, reward
             num_agents=env.num_agents,
             num_states=env.num_states
         )
-        signal_one_hot = np.zeros(env.num_states)
-        signal_one_hot[signal] = 1.0
+
+        # Get current belief and latent states (before observation update)
+        belief = agent.current_belief.detach().clone()  # Make a copy to ensure we have the pre-update state
+        latent = agent.current_latent.detach().clone()
+
         # Update agent belief state
-        _, dstr = agent.observe(encoded_obs)
-        print(f"Step {step}: Agent {agent_id} observed signal {signal} resulting in belief distribution {dstr.tolist()}")
-        
+        next_belief, next_dstr = agent.observe(encoded_obs)
+
+        # Infer latent state for next observation
+        # This ensures we're using the correct latent state for the next observation
+        next_latent = agent.infer_latent(
+            encoded_obs,  
+            {n_id: actions[n_id] for n_id in env.get_neighbors(agent_id) if n_id in actions},
+            rewards[agent_id] if rewards else 0.0,
+            encoded_next_obs 
+        )
+            
+        print(f"Step {step}: Agent {agent_id} observed signal {signal} resulting in belief distribution {next_dstr.tolist()}")
         # Store internal states for visualization if requested (for both training and evaluation)
         if args.plot_internal_states and 'belief_states' in metrics:
             current_belief = agent.get_belief_state()
@@ -252,21 +264,6 @@ def update_agent_states(agents, observations, next_observations, actions, reward
         
         # Store transition in replay buffer if training
         if training and agent_id in replay_buffers:
-            # Get current belief and latent states (before observation update)
-            belief = agent.current_belief.detach().clone()  # Make a copy to ensure we have the pre-update state
-            latent = agent.current_latent.detach().clone()
-            
-            # Infer latent state for next observation
-            # This ensures we're using the correct latent state for the next observation
-            next_latent = agent.infer_latent(
-                encoded_obs,  
-                {n_id: actions[n_id] for n_id in env.get_neighbors(agent_id) if n_id in actions},
-                rewards[agent_id] if rewards else 0.0,
-                encoded_next_obs 
-            )
-            
-            # Get the updated belief state after processing the next observation
-            next_belief = agent.current_belief.detach()  # This is now the updated belief after observe() was called
             
             # Get mean and logvar from inference
             mean, logvar = agent.get_latent_distribution_params()

@@ -12,7 +12,7 @@ def parse_args():
     
     # Environment parameters
     parser.add_argument('--num-agents', type=int, default=2, help='Number of agents')
-    parser.add_argument('--signal-accuracy', type=float, default=0.99, help='Accuracy of private signals')
+    parser.add_argument('--signal-accuracy', type=float, default=0.75, help='Accuracy of private signals')
     parser.add_argument('--network-type', type=str, default='complete', 
                         choices=['complete', 'ring', 'star', 'random'], help='Network structure')
     parser.add_argument('--network-density', type=float, default=0.5, 
@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument('--hidden-dim', type=int, default=128, help='Hidden layer dimension')
     parser.add_argument('--belief-dim', type=int, default=128, help='Belief state dimension')
     parser.add_argument('--latent-dim', type=int, default=128, help='Latent space dimension')
-    parser.add_argument('--discount-factor', type=float, default=0.99, 
+    parser.add_argument('--discount-factor', type=float, default=0.9, 
                         help='Discount factor (0 = average reward)')
     parser.add_argument('--entropy-weight', type=float, default=0.5, help='Entropy bonus weight')
     parser.add_argument('--kl-weight', type=float, default=0.01, help='KL weight for inference')
