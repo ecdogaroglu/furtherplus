@@ -35,7 +35,7 @@ from modules.metrics import (
 from modules.plotting import generate_plots
 from modules.agent import FURTHERPlusAgent
 from modules.networks import TemporalGNN
-from modules.replay_buffer import ReplayBuffer
+from modules.replay_buffer import ReplayBuffer, EpisodeAwareReplayBuffer
 
 def run_agents(env, args, training=True, model_path=None):
     """
@@ -94,13 +94,6 @@ def run_agents(env, args, training=True, model_path=None):
             output_dir, training
         )
         
-        # Mark the end of this episode in the replay buffers
-        if training:
-            for agent_id, buffer in replay_buffers.items():
-                buffer.end_trajectory()
-                print(f"Marked end of episode {episode+1} in replay buffer for agent {agent_id}")
-                print(f"Buffer now contains {len(buffer.episode_indices)} complete episodes")
-        
         # Store this episode's metrics separately
         episodic_metrics['episodes'].append(episode_metrics)
     
@@ -157,13 +150,6 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
     
     # Print the true state
     print(f"True state for this episode: {env.true_state}")
-    
-    # AUGMENTATION: If training, occasionally introduce synthetic state variations
-    # This helps prevent overfitting to a specific state within an episode
-    should_augment = training and getattr(args, 'use_state_augmentation', False)
-    augmentation_frequency = getattr(args, 'augmentation_frequency', 10)
-    synthetic_state_prob = getattr(args, 'synthetic_state_prob', 0.2)
-    original_true_state = env.true_state
         
     # Set global metrics for access in other functions
     set_metrics(metrics)
@@ -181,17 +167,6 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
     # Main simulation loop
     steps_iterator = tqdm(range(args.horizon), desc="Training" if training else "Evaluating")
     for step in steps_iterator:
-        # AUGMENTATION: Occasionally introduce synthetic state variations during training
-        if should_augment and training and step > 0 and step % augmentation_frequency == 0:
-            if np.random.random() < synthetic_state_prob:
-                # Temporarily switch to a different state to introduce variability
-                temp_state = (env.true_state + 1) % env.num_states
-                env.true_state = temp_state
-                print(f"[Augmentation] Temporarily using synthetic state: {temp_state} at step {step}")
-            else:
-                # Restore original state
-                env.true_state = original_true_state
-        
         # Get agent actions
         actions, action_probs = select_agent_actions(agents, metrics)
         
@@ -221,12 +196,15 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
         if training and args.save_model and (step + 1) % max(1, args.horizon // 5) == 0:
             save_checkpoint_models(agents, output_dir, step)
         
-        # AUGMENTATION: Reset to original state at the end of each augmentation cycle
-        if should_augment and training and (step + 1) % augmentation_frequency == 0:
-            env.true_state = original_true_state
-        
         if done:
             break
+    
+    # End episode for each replay buffer if training
+    if training:
+        for agent_id, buffer in replay_buffers.items():
+            # Only call end_episode if it's an EpisodeAwareReplayBuffer
+            if isinstance(buffer, EpisodeAwareReplayBuffer):
+                buffer.end_episode(true_state=env.true_state)
     
     # Display completion time
     total_time = time.time() - start_time
@@ -323,6 +301,22 @@ def update_agent_states(agents, observations, next_observations, actions, reward
                 batch = replay_buffers[agent_id].sample(args.batch_size)
                 # Update network parameters
                 agent.update(batch)
+                
+                # Log episode buffer statistics if using EpisodeAwareReplayBuffer
+                if isinstance(replay_buffers[agent_id], EpisodeAwareReplayBuffer) and step % (args.update_interval * 10) == 0:
+                    buffer = replay_buffers[agent_id]
+                    episode_counts = buffer.get_episode_counts()
+                    true_states = buffer.get_true_states()
+                    
+                    # Print statistics
+                    print(f"\nAgent {agent_id} Episode Buffer Stats:")
+                    for i, count in enumerate(episode_counts):
+                        episode_num = i if i < len(episode_counts) - 1 else "current"
+                        state_info = f", True State: {true_states.get(i, 'Unknown')}" if i in true_states else ""
+                        print(f"  Episode {episode_num}: {count} transitions{state_info}")
+                    print(f"  Total transitions: {len(buffer)}")
+                    print(f"  Episodes stored: {len(episode_counts)}/{buffer.episodes_to_retain}")
+                    print("")
 
 def initialize_agents(env, args, obs_dim):
     """Initialize FURTHER+ agents."""
@@ -386,12 +380,15 @@ def initialize_replay_buffers(agents, args, obs_dim):
     replay_buffers = {}
     
     for agent_id in agents:
-        replay_buffers[agent_id] = ReplayBuffer(
+        # Use the Episode-Aware Replay Buffer instead of the standard one
+        replay_buffers[agent_id] = EpisodeAwareReplayBuffer(
             capacity=args.buffer_capacity,
             observation_dim=obs_dim,
             belief_dim=args.belief_dim,
             latent_dim=args.latent_dim,
             device=args.device,
-            sequence_length=8  # Default sequence length for sampling
+            sequence_length=8,  # Default sequence length for sampling
+            episodes_to_retain=min(args.num_episodes, 4),  # Store up to 4 episodes, or fewer if episodes < 4
+            samples_per_episode=None  # Let the buffer calculate the right number
         )
     return replay_buffers

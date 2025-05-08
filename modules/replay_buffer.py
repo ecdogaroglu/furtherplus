@@ -1,7 +1,8 @@
 from modules.utils import get_best_device
-from collections import deque
+from collections import deque, defaultdict
 import numpy as np
 import torch
+import random
 
 class ReplayBuffer:
     """Enhanced replay buffer supporting both sequence sampling and temporal processing."""
@@ -15,10 +16,6 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=capacity)
         self.belief_dim = belief_dim
         
-        # Add episode tracking to help with multi-episode sampling
-        self.episode_indices = []  # List of (start_idx, end_idx) tuples for each episode
-        self.current_episode_start = 0  # Index tracking the start of the current episode
-        
     def push(self, signal, neighbor_actions, belief, latent, action, reward, 
              next_signal, next_belief, next_latent, mean=None, logvar=None):
         """Save a transition to the buffer."""
@@ -27,15 +24,8 @@ class ReplayBuffer:
         self.buffer.append(transition)
     
     def end_trajectory(self):
-        """Mark the end of the current episode for episodic sampling."""
-        # Store the episode boundary
-        if len(self.buffer) > self.current_episode_start:
-            episode_end = len(self.buffer) - 1
-            # Only add this episode if it has enough transitions for a sequence
-            if episode_end - self.current_episode_start + 1 >= self.sequence_length:
-                self.episode_indices.append((self.current_episode_start, episode_end))
-            # Start a new episode
-            self.current_episode_start = len(self.buffer)
+        """Backward compatibility method - does nothing in the continuous version."""
+        pass
     
     def __len__(self):
         return len(self.buffer)
@@ -70,84 +60,6 @@ class ReplayBuffer:
             indices = np.random.choice(len(self.buffer), batch_size, replace=False)
             transitions = [self.buffer[i] for i in indices]
             return self._process_transitions(transitions)
-    
-    def sample_sequence_batch(self, batch_size, sequence_length=None):
-        """Sample sequences for training, avoiding episode boundaries."""
-        if sequence_length is None:
-            sequence_length = self.sequence_length
-            
-        # Ensure we have enough transitions
-        if len(self.buffer) < sequence_length:
-            return None
-            
-        # Sample random starting points that don't cross episode boundaries
-        valid_start_indices = []
-        
-        # If we have episode boundaries recorded, use them
-        if self.episode_indices:
-            for start_idx, end_idx in self.episode_indices:
-                # Only include episodes with enough transitions for a full sequence
-                if end_idx - start_idx + 1 >= sequence_length:
-                    # Add all valid starting indices from this episode
-                    valid_start_indices.extend(range(start_idx, end_idx - sequence_length + 2))
-            
-            # Add the current episode if it has enough transitions
-            current_length = len(self.buffer) - self.current_episode_start
-            if current_length >= sequence_length:
-                valid_start_indices.extend(range(self.current_episode_start, len(self.buffer) - sequence_length + 1))
-        else:
-            # If no episode boundaries, just use all possible starting indices
-            valid_start_indices = list(range(0, len(self.buffer) - sequence_length + 1))
-            
-        # If we don't have enough valid starting points, return None
-        if len(valid_start_indices) < batch_size:
-            return self.sample(batch_size, sequence_length, mode="sequence")  # Fall back to standard sampling
-            
-        # Sample from valid starting points
-        chosen_indices = np.random.choice(valid_start_indices, size=batch_size, replace=len(valid_start_indices) < batch_size)
-        
-        # Extract sequences
-        sequences = []
-        for start_idx in chosen_indices:
-            sequence = [self.buffer[i] for i in range(start_idx, start_idx + sequence_length)]
-            sequences.append(sequence)
-            
-        return self._process_sequence_batch(sequences)
-    
-    def sample_from_previous_episodes(self, batch_size, sequence_length=None):
-        """Sample sequences specifically from previous episodes to promote state diversity."""
-        if sequence_length is None:
-            sequence_length = self.sequence_length
-            
-        # Need at least one completed episode
-        if len(self.episode_indices) < 1:
-            return None
-            
-        # Only sample from past episodes, not the current one
-        past_episode_indices = self.episode_indices[:-1] if len(self.episode_indices) > 1 else self.episode_indices
-        
-        # Collect valid starting indices from past episodes
-        valid_start_indices = []
-        for start_idx, end_idx in past_episode_indices:
-            # Only include episodes with enough transitions for a full sequence
-            if end_idx - start_idx + 1 >= sequence_length:
-                # Add all valid starting indices from this episode
-                valid_start_indices.extend(range(start_idx, end_idx - sequence_length + 2))
-                
-        # If no valid starting points from past episodes, return None
-        if len(valid_start_indices) < batch_size:
-            return None
-            
-        # Sample from valid starting points
-        chosen_indices = np.random.choice(valid_start_indices, size=batch_size, replace=len(valid_start_indices) < batch_size)
-        
-        # Extract sequences
-        sequences = []
-        for start_idx in chosen_indices:
-            sequence = [self.buffer[i] for i in range(start_idx, start_idx + sequence_length)]
-            sequences.append(sequence)
-            
-        return self._process_sequence_batch(sequences)
     
     def _standardize_belief_state(self, belief):
         """Ensure belief state has consistent shape [1, batch_size, hidden_dim]."""
@@ -271,3 +183,180 @@ class ReplayBuffer:
         logvars_tensor = torch.cat([lv.unsqueeze(0) if lv.dim() == 1 else lv for lv in logvars])
         
         return means_tensor, logvars_tensor
+
+
+class EpisodeAwareReplayBuffer(ReplayBuffer):
+    """
+    Enhanced replay buffer that tracks episode boundaries and maintains memory of previous episodes.
+    
+    This buffer is designed to prevent catastrophic forgetting by retaining and sampling
+    from transitions across multiple episodes, helping agents maintain state diversity
+    and prevent overfitting to the current state.
+    """
+    def __init__(self, capacity, observation_dim, belief_dim, latent_dim, 
+                 device=None, sequence_length=8, 
+                 episodes_to_retain=4, samples_per_episode=None):
+        super().__init__(capacity, observation_dim, belief_dim, latent_dim, device, sequence_length)
+        
+        # Replace the standard buffer with episode-specific buffers
+        self.buffer = None  # Override the parent's buffer
+        
+        # Store transitions by episode
+        self.episode_buffers = []
+        self.current_episode_buffer = deque(maxlen=capacity)
+        
+        # Configuration for episode retention
+        self.episodes_to_retain = episodes_to_retain  # Number of episodes to keep in memory
+        
+        # If samples_per_episode is not specified, use capacity/episodes_to_retain
+        self.samples_per_episode = samples_per_episode or (capacity // episodes_to_retain)
+        
+        # Track episode statistics
+        self.current_episode = 0
+        self.true_states_per_episode = {}
+    
+    def push(self, signal, neighbor_actions, belief, latent, action, reward, 
+             next_signal, next_belief, next_latent, mean=None, logvar=None):
+        """Save a transition to the current episode buffer."""
+        transition = (signal, neighbor_actions, belief, latent, action, reward, 
+                     next_signal, next_belief, next_latent, mean, logvar)
+        self.current_episode_buffer.append(transition)
+    
+    def end_episode(self, true_state=None):
+        """Mark the end of the current episode and prepare for a new one."""
+        # If we have transitions in the current episode, store them
+        if len(self.current_episode_buffer) > 0:
+            # Store true state for this episode if provided
+            if true_state is not None:
+                self.true_states_per_episode[self.current_episode] = true_state
+                
+            # Convert to list to ensure we have a copy
+            self.episode_buffers.append(list(self.current_episode_buffer))
+            self.current_episode_buffer.clear()
+            
+            # Limit the number of stored episodes
+            if len(self.episode_buffers) > self.episodes_to_retain:
+                # Remove the oldest episode
+                self.episode_buffers.pop(0)
+                
+            # Increment episode counter
+            self.current_episode += 1
+    
+    def __len__(self):
+        """Return the total number of transitions across all stored episodes and current episode."""
+        episode_lengths = sum(len(buffer) for buffer in self.episode_buffers)
+        return episode_lengths + len(self.current_episode_buffer)
+    
+    def sample(self, batch_size, sequence_length=None, mode="single"):
+        """Sample transitions across episodes to maintain diversity."""
+        if mode == "sequence":
+            return self._sample_sequences(batch_size, sequence_length)
+        else:
+            return self._sample_transitions(batch_size)
+    
+    def _sample_transitions(self, batch_size):
+        """Sample individual transitions while ensuring episode diversity."""
+        # Ensure we have enough transitions total
+        total_transitions = len(self)
+        if total_transitions < batch_size:
+            return None
+        
+        # Collect all available buffers including the current one
+        all_buffers = self.episode_buffers + [self.current_episode_buffer] if len(self.current_episode_buffer) > 0 else self.episode_buffers
+        
+        if not all_buffers:
+            return None
+            
+        # Calculate how many samples to take from each episode
+        num_episodes = len(all_buffers)
+        
+        # At least one sample from each episode, distributed evenly
+        samples_per_buffer = [max(1, batch_size // num_episodes)] * num_episodes
+        
+        # Distribute any remaining samples
+        remaining = batch_size - sum(samples_per_buffer)
+        for i in range(remaining):
+            samples_per_buffer[i % num_episodes] += 1
+        
+        # Sample transitions from each buffer
+        transitions = []
+        for i, buffer in enumerate(all_buffers):
+            # Adjust if buffer has fewer transitions than requested
+            num_samples = min(samples_per_buffer[i], len(buffer))
+            if num_samples > 0:
+                indices = np.random.choice(len(buffer), num_samples, replace=False)
+                transitions.extend([buffer[idx] for idx in indices])
+        
+        # If we still need more transitions, sample more from available buffers
+        remaining = batch_size - len(transitions)
+        if remaining > 0:
+            # Instead of checking if transitions are already in the list (which doesn't work with tensors),
+            # just sample from the largest buffers with replacement
+            buffer_sizes = [len(buffer) for buffer in all_buffers]
+            if sum(buffer_sizes) > 0:  # Make sure we have buffers with data
+                # Sample from buffers proportionally to their size
+                probs = np.array(buffer_sizes) / sum(buffer_sizes)
+                buffer_indices = np.random.choice(len(all_buffers), remaining, p=probs)
+                
+                for buffer_idx in buffer_indices:
+                    buffer = all_buffers[buffer_idx]
+                    if len(buffer) > 0:
+                        idx = np.random.randint(0, len(buffer))
+                        transitions.append(buffer[idx])
+        
+        # Process the transitions
+        return self._process_transitions(transitions)
+    
+    def _sample_sequences(self, batch_size, sequence_length=None):
+        """Sample sequences of transitions while ensuring episode diversity."""
+        if sequence_length is None:
+            sequence_length = self.sequence_length
+        
+        # Collect all episode buffers including the current one if it has enough transitions
+        valid_buffers = []
+        for buffer in self.episode_buffers:
+            if len(buffer) >= sequence_length:
+                valid_buffers.append(buffer)
+                
+        # Add current episode buffer if valid
+        if len(self.current_episode_buffer) >= sequence_length:
+            valid_buffers.append(list(self.current_episode_buffer))
+        
+        # If not enough valid buffers, return None
+        if not valid_buffers:
+            return None
+        
+        # Calculate samples per buffer
+        num_buffers = len(valid_buffers)
+        samples_per_buffer = [batch_size // num_buffers] * num_buffers
+        
+        # Distribute any remaining samples
+        remaining = batch_size - sum(samples_per_buffer)
+        for i in range(remaining):
+            samples_per_buffer[i % num_buffers] += 1
+        
+        # Sample sequences from each buffer
+        sequences = []
+        for i, buffer in enumerate(valid_buffers):
+            num_samples = samples_per_buffer[i]
+            if num_samples > 0:
+                max_start = len(buffer) - sequence_length + 1
+                start_indices = np.random.randint(0, max_start, size=num_samples)
+                
+                for start_idx in start_indices:
+                    sequence = [buffer[start_idx + j] for j in range(sequence_length)]
+                    sequences.append(sequence)
+        
+        # Process the sequences
+        return self._process_sequence_batch(sequences)
+    
+    def get_episode_counts(self):
+        """Return the number of transitions stored per episode."""
+        counts = [len(buffer) for buffer in self.episode_buffers]
+        if len(self.current_episode_buffer) > 0:
+            counts.append(len(self.current_episode_buffer))
+        return counts
+    
+    def get_true_states(self):
+        """Return the true states for each episode."""
+        return self.true_states_per_episode
