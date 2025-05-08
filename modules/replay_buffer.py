@@ -15,6 +15,10 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=capacity)
         self.belief_dim = belief_dim
         
+        # Add episode tracking to help with multi-episode sampling
+        self.episode_indices = []  # List of (start_idx, end_idx) tuples for each episode
+        self.current_episode_start = 0  # Index tracking the start of the current episode
+        
     def push(self, signal, neighbor_actions, belief, latent, action, reward, 
              next_signal, next_belief, next_latent, mean=None, logvar=None):
         """Save a transition to the buffer."""
@@ -23,8 +27,15 @@ class ReplayBuffer:
         self.buffer.append(transition)
     
     def end_trajectory(self):
-        """Backward compatibility method - does nothing in the continuous version."""
-        pass
+        """Mark the end of the current episode for episodic sampling."""
+        # Store the episode boundary
+        if len(self.buffer) > self.current_episode_start:
+            episode_end = len(self.buffer) - 1
+            # Only add this episode if it has enough transitions for a sequence
+            if episode_end - self.current_episode_start + 1 >= self.sequence_length:
+                self.episode_indices.append((self.current_episode_start, episode_end))
+            # Start a new episode
+            self.current_episode_start = len(self.buffer)
     
     def __len__(self):
         return len(self.buffer)
@@ -59,6 +70,84 @@ class ReplayBuffer:
             indices = np.random.choice(len(self.buffer), batch_size, replace=False)
             transitions = [self.buffer[i] for i in indices]
             return self._process_transitions(transitions)
+    
+    def sample_sequence_batch(self, batch_size, sequence_length=None):
+        """Sample sequences for training, avoiding episode boundaries."""
+        if sequence_length is None:
+            sequence_length = self.sequence_length
+            
+        # Ensure we have enough transitions
+        if len(self.buffer) < sequence_length:
+            return None
+            
+        # Sample random starting points that don't cross episode boundaries
+        valid_start_indices = []
+        
+        # If we have episode boundaries recorded, use them
+        if self.episode_indices:
+            for start_idx, end_idx in self.episode_indices:
+                # Only include episodes with enough transitions for a full sequence
+                if end_idx - start_idx + 1 >= sequence_length:
+                    # Add all valid starting indices from this episode
+                    valid_start_indices.extend(range(start_idx, end_idx - sequence_length + 2))
+            
+            # Add the current episode if it has enough transitions
+            current_length = len(self.buffer) - self.current_episode_start
+            if current_length >= sequence_length:
+                valid_start_indices.extend(range(self.current_episode_start, len(self.buffer) - sequence_length + 1))
+        else:
+            # If no episode boundaries, just use all possible starting indices
+            valid_start_indices = list(range(0, len(self.buffer) - sequence_length + 1))
+            
+        # If we don't have enough valid starting points, return None
+        if len(valid_start_indices) < batch_size:
+            return self.sample(batch_size, sequence_length, mode="sequence")  # Fall back to standard sampling
+            
+        # Sample from valid starting points
+        chosen_indices = np.random.choice(valid_start_indices, size=batch_size, replace=len(valid_start_indices) < batch_size)
+        
+        # Extract sequences
+        sequences = []
+        for start_idx in chosen_indices:
+            sequence = [self.buffer[i] for i in range(start_idx, start_idx + sequence_length)]
+            sequences.append(sequence)
+            
+        return self._process_sequence_batch(sequences)
+    
+    def sample_from_previous_episodes(self, batch_size, sequence_length=None):
+        """Sample sequences specifically from previous episodes to promote state diversity."""
+        if sequence_length is None:
+            sequence_length = self.sequence_length
+            
+        # Need at least one completed episode
+        if len(self.episode_indices) < 1:
+            return None
+            
+        # Only sample from past episodes, not the current one
+        past_episode_indices = self.episode_indices[:-1] if len(self.episode_indices) > 1 else self.episode_indices
+        
+        # Collect valid starting indices from past episodes
+        valid_start_indices = []
+        for start_idx, end_idx in past_episode_indices:
+            # Only include episodes with enough transitions for a full sequence
+            if end_idx - start_idx + 1 >= sequence_length:
+                # Add all valid starting indices from this episode
+                valid_start_indices.extend(range(start_idx, end_idx - sequence_length + 2))
+                
+        # If no valid starting points from past episodes, return None
+        if len(valid_start_indices) < batch_size:
+            return None
+            
+        # Sample from valid starting points
+        chosen_indices = np.random.choice(valid_start_indices, size=batch_size, replace=len(valid_start_indices) < batch_size)
+        
+        # Extract sequences
+        sequences = []
+        for start_idx in chosen_indices:
+            sequence = [self.buffer[i] for i in range(start_idx, start_idx + sequence_length)]
+            sequences.append(sequence)
+            
+        return self._process_sequence_batch(sequences)
     
     def _standardize_belief_state(self, belief):
         """Ensure belief state has consistent shape [1, batch_size, hidden_dim]."""

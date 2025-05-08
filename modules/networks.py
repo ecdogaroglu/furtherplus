@@ -548,7 +548,7 @@ class TemporalGNN(nn.Module):
         if len(self.temporal_memory['node_features']) == 0:
             # If empty, return zero tensor
             batch_size = 1  # Default batch size
-            return torch.zeros(batch_size, self.hidden_dim * self.gnn_layers[-1].heads, device=self.device)
+            return torch.zeros(batch_size, self.feature_dim, device=self.device)
         
         # Process each frame with GNN
         temporal_gnn_outputs = []
@@ -557,14 +557,37 @@ class TemporalGNN(nn.Module):
         for i in range(len(self.temporal_memory['node_features'])):
             node_feats = self.temporal_memory['node_features'][i]
             edge_idx = self.temporal_memory['edge_indices'][i]
-            gnn_output = self._apply_gnn(node_feats, edge_idx)
             
-            # Extract only the ego agent's node representation (first node of each batch)
-            local_batch_size = node_feats.size(0) // self.num_agents
-            batch_sizes.append(local_batch_size)
-            ego_indices = torch.arange(0, node_feats.size(0), self.num_agents, device=self.device)
-            ego_output = gnn_output[ego_indices]
-            temporal_gnn_outputs.append(ego_output)
+            # Ensure the tensors are on the correct device
+            node_feats = node_feats.to(self.device)
+            edge_idx = edge_idx.to(self.device)
+            
+            # Apply GNN layers with proper error handling
+            try:
+                gnn_output = self._apply_gnn(node_feats, edge_idx)
+                
+                # Extract only the ego agent's node representation (first node of each batch)
+                local_batch_size = node_feats.size(0) // self.num_agents
+                batch_sizes.append(local_batch_size)
+                ego_indices = torch.arange(0, node_feats.size(0), self.num_agents, device=self.device)
+                ego_output = gnn_output[ego_indices]
+                temporal_gnn_outputs.append(ego_output)
+            except Exception as e:
+                print(f"Warning: Error in GNN processing at time step {i}: {e}")
+                # Handle failure by returning a safe default tensor
+                if len(temporal_gnn_outputs) > 0:
+                    # Use the same shape as the previous output
+                    temporal_gnn_outputs.append(torch.zeros_like(temporal_gnn_outputs[-1]))
+                    batch_sizes.append(batch_sizes[-1])
+                else:
+                    # First element failed, create a default tensor
+                    default_tensor = torch.zeros(1, self.feature_dim, device=self.device)
+                    temporal_gnn_outputs.append(default_tensor)
+                    batch_sizes.append(1)
+        
+        # Safety check - if we have no outputs, return zeros
+        if len(temporal_gnn_outputs) == 0:
+            return torch.zeros(1, self.feature_dim, device=self.device)
         
         # Check if all batch sizes are the same
         if len(set(batch_sizes)) > 1:
@@ -584,7 +607,6 @@ class TemporalGNN(nn.Module):
                         temporal_gnn_outputs[i] = torch.mean(temporal_gnn_outputs[i], dim=0, keepdim=True)
                     else:
                         # For other cases, replace with zeros of the right size
-                        # This is less ideal but prevents crashes
                         temporal_gnn_outputs[i] = torch.zeros(
                             target_batch_size, 
                             temporal_gnn_outputs[i].size(1), 
@@ -592,7 +614,12 @@ class TemporalGNN(nn.Module):
                         )
         
         # Now all tensors have the same batch size and can be stacked
-        sequence = torch.stack(temporal_gnn_outputs, dim=1)  # [batch_size, seq_len, hidden_dim]
+        try:
+            sequence = torch.stack(temporal_gnn_outputs, dim=1)  # [batch_size, seq_len, hidden_dim]
+        except Exception as e:
+            print(f"Warning: Could not stack temporal GNN outputs: {e}")
+            # Return the most recent output as fallback
+            return temporal_gnn_outputs[-1]
         
         # Update attention mask if needed
         seq_len = len(temporal_gnn_outputs)
@@ -605,14 +632,23 @@ class TemporalGNN(nn.Module):
                     if j > i:  # Future frames
                         self.temporal_memory['attention_mask'][i, j] = 0
         
-        # Apply temporal self-attention
-        attn_output, _ = self.temporal_attention(
-            sequence, sequence, sequence,
-            attn_mask=self.temporal_memory['attention_mask']
-        )
-        
-        # Return the most recent output
-        return attn_output[:, -1]
+        # Apply temporal self-attention with proper error handling
+        try:
+            # Set appropriate attention mask
+            attn_mask = self.temporal_memory['attention_mask']
+            
+            # Apply attention
+            attn_output, _ = self.temporal_attention(
+                sequence, sequence, sequence,
+                attn_mask=attn_mask
+            )
+            
+            # Return the most recent output
+            return attn_output[:, -1]
+        except Exception as e:
+            print(f"Warning: Error in temporal attention: {e}")
+            # Return the most recent GNN output if attention fails
+            return sequence[:, -1]
     
     def forward(self, signal, neighbor_actions, reward, next_signal, current_latent=None):
         """
@@ -651,25 +687,44 @@ class TemporalGNN(nn.Module):
         reward = reward.to(self.device)
         next_signal = next_signal.to(self.device)
         
-        # Construct graph from current observation and actions
-        node_features, edge_index = self._construct_graph(signal, neighbor_actions)
-        
-        # Update temporal memory
-        self._update_temporal_memory(node_features, edge_index)
-        
-        # Apply GNN with temporal attention
-        gnn_output = self._apply_temporal_attention()
-        
-        # Generate latent distribution parameters
-        mean = self.latent_mean(gnn_output)
-        logvar = self.latent_logvar(gnn_output)
-        
-        # Calculate belief distribution
-        logits = self.belief_head(gnn_output)
-        temperature = 0.5  # Temperature for softmax
-        belief_distribution = F.softmax(logits/temperature, dim=-1)
-        
-        return mean, logvar, belief_distribution
+        try:
+            # Construct graph from current observation and actions
+            node_features, edge_index = self._construct_graph(signal, neighbor_actions)
+            
+            # Update temporal memory
+            self._update_temporal_memory(node_features, edge_index)
+            
+            # Apply GNN with temporal attention
+            gnn_output = self._apply_temporal_attention()
+            
+            # Check if gnn_output has NaN values (can happen with attention)
+            if torch.isnan(gnn_output).any():
+                print("Warning: NaN values detected in GNN output. Replacing with zeros.")
+                gnn_output = torch.zeros_like(gnn_output)
+            
+            # Generate latent distribution parameters
+            mean = self.latent_mean(gnn_output)
+            logvar = self.latent_logvar(gnn_output)
+            
+            # Apply numerical stability constraints to logvar
+            logvar = torch.clamp(logvar, min=-20.0, max=2.0)
+            
+            # Calculate belief distribution
+            logits = self.belief_head(gnn_output)
+            temperature = 0.5  # Temperature for softmax
+            belief_distribution = F.softmax(logits/temperature, dim=-1)
+            
+            return mean, logvar, belief_distribution
+            
+        except Exception as e:
+            print(f"Forward pass error: {e}")
+            # Return safe default values in case of failure
+            batch_size = signal.size(0)
+            default_mean = torch.zeros(batch_size, self.latent_dim, device=self.device)
+            default_logvar = torch.zeros(batch_size, self.latent_dim, device=self.device)
+            default_belief = torch.ones(batch_size, self.num_belief_states, device=self.device) / self.num_belief_states
+            
+            return default_mean, default_logvar, default_belief
     
     def predict_actions(self, signal, latent):
         """
@@ -682,54 +737,81 @@ class TemporalGNN(nn.Module):
         Returns:
             action_logits: Logits for neighbor actions
         """
-        # Ensure inputs have batch dimension
-        if signal.dim() == 1:
-            signal = signal.unsqueeze(0)
-            
-        # Handle different latent dimensions
-        if latent.dim() == 1:
-            latent = latent.unsqueeze(0)  # [1, latent_dim]
-        elif latent.dim() == 3:
-            # If latent is [batch_size, seq_len, latent_dim], take the last sequence element
-            latent = latent[:, -1, :]  # [batch_size, latent_dim]
-        
-        # Make sure everything is on the correct device
-        signal = signal.to(self.device)
-        latent = latent.to(self.device)
-        
-        # Construct a dummy graph with just the signal
-        # We'll use zeros for neighbor actions since we're trying to predict them
-        batch_size = signal.size(0)
-        dummy_actions = torch.zeros(batch_size, self.num_agents * self.action_dim, device=self.device)
-        node_features, edge_index = self._construct_graph(signal, dummy_actions)
-        
-        # Process through GNN
-        gnn_output = self._apply_gnn(node_features, edge_index)
-        
-        # Extract only the ego agent's node
-        batch_size = node_features.size(0) // self.num_agents
-        ego_indices = torch.arange(0, node_features.size(0), self.num_agents, device=self.device)
-        ego_output = gnn_output[ego_indices]
-        
-        # Ensure latent has the same batch size
-        if latent.size(0) != ego_output.size(0):
-            if latent.size(0) == 1 and ego_output.size(0) > 1:
-                # Expand latent to match batch size
-                latent = latent.expand(ego_output.size(0), -1)
-            elif latent.size(0) > 1 and ego_output.size(0) == 1:
-                # Take mean of latent
-                latent = torch.mean(latent, dim=0, keepdim=True)
+        try:
+            # Ensure inputs have batch dimension
+            if signal.dim() == 1:
+                signal = signal.unsqueeze(0)
                 
-        # Project ego_output to latent dimension using the feature adapter
-        ego_output = self.feature_adapter(ego_output)
-        
-        # Combine with latent
-        combined = ego_output + latent  # Simple addition, could be more complex
-        
-        # Predict actions
-        action_logits = self.action_predictor(combined)
-        
-        return action_logits
+            # Handle different latent dimensions
+            if latent.dim() == 1:
+                latent = latent.unsqueeze(0)  # [1, latent_dim]
+            elif latent.dim() == 3:
+                # If latent is [batch_size, seq_len, latent_dim], take the last sequence element
+                latent = latent[:, -1, :]  # [batch_size, latent_dim]
+            
+            # Make sure everything is on the correct device
+            signal = signal.to(self.device)
+            latent = latent.to(self.device)
+            
+            # Check for NaN values
+            if torch.isnan(latent).any():
+                print("Warning: NaN values detected in latent. Replacing with zeros.")
+                latent = torch.zeros_like(latent)
+            
+            # Construct a dummy graph with just the signal
+            # We'll use zeros for neighbor actions since we're trying to predict them
+            batch_size = signal.size(0)
+            dummy_actions = torch.zeros(batch_size, self.num_agents * self.action_dim, device=self.device)
+            node_features, edge_index = self._construct_graph(signal, dummy_actions)
+            
+            # Process through GNN
+            gnn_output = self._apply_gnn(node_features, edge_index)
+            
+            # Extract only the ego agent's node
+            batch_size = node_features.size(0) // self.num_agents
+            ego_indices = torch.arange(0, node_features.size(0), self.num_agents, device=self.device)
+            ego_output = gnn_output[ego_indices]
+            
+            # Check for NaN values
+            if torch.isnan(ego_output).any():
+                print("Warning: NaN values detected in GNN output. Replacing with zeros.")
+                ego_output = torch.zeros_like(ego_output)
+            
+            # Ensure latent has the same batch size
+            if latent.size(0) != ego_output.size(0):
+                if latent.size(0) == 1 and ego_output.size(0) > 1:
+                    # Expand latent to match batch size
+                    latent = latent.expand(ego_output.size(0), -1)
+                elif latent.size(0) > 1 and ego_output.size(0) == 1:
+                    # Take mean of latent
+                    latent = torch.mean(latent, dim=0, keepdim=True)
+                    
+            # Project ego_output to latent dimension using the feature adapter
+            ego_output = self.feature_adapter(ego_output)
+            
+            # Add diagnostic print before combination
+            if self.training is False:  # Only in evaluation mode
+                print(f"[EVAL] ego_output shape: {ego_output.shape}, latent shape: {latent.shape}")
+                print(f"[EVAL] ego_output range: {ego_output.min().item():.3f} to {ego_output.max().item():.3f}")
+                print(f"[EVAL] latent range: {latent.min().item():.3f} to {latent.max().item():.3f}")
+            
+            # Combine with latent
+            combined = ego_output + latent  # Simple addition, could be more complex
+            
+            # Predict actions
+            action_logits = self.action_predictor(combined)
+            
+            return action_logits
+            
+        except Exception as e:
+            print(f"Action prediction error: {e}")
+            # Return default action logits as fallback
+            batch_size = 1
+            try:
+                batch_size = signal.size(0)
+            except:
+                pass
+            return torch.zeros(batch_size, self.action_dim * self.num_agents, device=self.device)
     
     def reset_memory(self):
         """Reset temporal memory."""

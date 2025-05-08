@@ -392,7 +392,14 @@ def get_neighbor_actions(actions, agent_id, env):
 def update_progress_display(steps_iterator, info, total_rewards, step, training):
     """Update the progress bar with current information."""
     if 'incorrect_prob' in info:
-        steps_iterator.set_postfix(incorrect_prob=info['incorrect_prob'])
+        # Format the incorrect_prob array to be more readable
+        if isinstance(info['incorrect_prob'], list):
+            # Round values to 2 decimal places and format as a compact string
+            formatted_probs = [f"{p:.2f}" for p in info['incorrect_prob']]
+            steps_iterator.set_postfix(incorrect_prob=formatted_probs)
+        else:
+            # For scalar values, simply round to 2 decimal places
+            steps_iterator.set_postfix(incorrect_prob=f"{info['incorrect_prob']:.2f}")
     
     if training and step > 0 and step % 1000 == 0:
         avg_rewards = total_rewards / (step + 1)

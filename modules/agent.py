@@ -368,11 +368,41 @@ class FURTHERPlusAgent:
         return action, action_probs.squeeze(0).detach().cpu().numpy()
     
     def train(self, batch_size=32, sequence_length=32):
-        """Train the agent using sequential data from the replay buffer."""
-        # Sample sequential data from the replay buffer
-        batch_sequences = self.replay_buffer.sample(batch_size, sequence_length, mode="sequence")
+        """Train agent using experiences from replay buffer."""
+        # Only train if buffer has enough samples
+        if len(self.replay_buffer) < batch_size:
+            return None
         
-        # Update networks using sequential data
+        # Sample sequences from replay buffer
+        # For a normal sequence batch
+        batch_sequences = self.replay_buffer.sample_sequence_batch(
+            batch_size=batch_size, 
+            sequence_length=sequence_length
+        )
+        
+        # If we have a lot of data, also sample some transitions from previous episodes
+        # This helps prevent overfitting to the current episode's state
+        buffer_utilization = len(self.replay_buffer) / self.replay_buffer.capacity
+        
+        # If we have filled at least 30% of the buffer, start mixing in past episodes
+        # This is crucial for preventing state overfitting across episodes
+        if buffer_utilization > 0.3 and self.replay_buffer.episode_indices and len(self.replay_buffer.episode_indices) > 1:
+            # Create a mixed batch with some sequences from previous episodes
+            previous_episodes_batch = self.replay_buffer.sample_from_previous_episodes(
+                batch_size=batch_size // 2,  # Half the batch from previous episodes
+                sequence_length=sequence_length
+            )
+            
+            # Combine with current episode data
+            for key in batch_sequences:
+                if key in previous_episodes_batch:
+                    # For the first half, keep the current episode data
+                    # For the second half, use data from previous episodes
+                    current_half = batch_sequences[key][:batch_size//2]
+                    previous_half = previous_episodes_batch[key]
+                    batch_sequences[key] = torch.cat([current_half, previous_half], dim=0)
+        
+        # Update all network parameters
         return self.update(batch_sequences)
     
     def update(self, batch_sequences):
@@ -593,45 +623,62 @@ class FURTHERPlusAgent:
         return q_loss.item()
     
     def _update_policy(self, beliefs, latents, actions, neighbor_actions):
-        """Update policy network and calculate advantage for Transformer training.
+        """Update policy network parameters."""
+        # Compute action logits from policy
+        logits = self.policy(beliefs, latents)
         
-        Returns:
-            Tuple of (policy_loss_value, advantage)
-        """
-        # Generate fresh action logits for the batch
-        action_logits = self.policy(beliefs, latents)
+        # Compute log probabilities for actions
+        log_probs = F.log_softmax(logits, dim=-1)
         
-        # Calculate probabilities from the logits
-        action_probs = F.softmax(action_logits, dim=1)
-        log_probs = F.log_softmax(action_logits, dim=1)
+        # Gather log probs for taken actions
+        selected_log_probs = log_probs.gather(1, actions)
         
-        # Compute entropy
-        entropy = -torch.sum(action_probs * log_probs, dim=1, keepdim=True)
+        # Compute entropy of the policy
+        entropy = -(log_probs.exp() * log_probs).sum(dim=1, keepdim=True)
         
-        # Get Q-values
-        with torch.no_grad():
-            q1 = self.q_network1(beliefs, latents, neighbor_actions)
-            q2 = self.q_network2(beliefs, latents, neighbor_actions)
-            q = torch.min(q1, q2)
+        # Get Q-values from both critics for the states and actions
+        q1 = self.q_network1(beliefs, latents, neighbor_actions)
+        q2 = self.q_network2(beliefs, latents, neighbor_actions)
         
-        # Compute expected Q-value
-        expected_q = torch.sum(action_probs * q, dim=1, keepdim=True)
+        # Use minimum Q-value for robustness
+        min_q = torch.min(q1, q2)
         
-        # Policy loss is negative of expected Q-value plus entropy
-        policy_loss = -(expected_q + self.entropy_weight * entropy).mean()
+        # Get state-values by sampling actions from policy
+        probs = F.softmax(logits, dim=-1)
         
-        # Calculate advantage for Transformer training
-        # Advantage is Q-value of taken action minus expected Q-value (baseline)
-        q_actions = q.gather(1, actions.unsqueeze(1))
-        advantage = q_actions - expected_q.detach()
+        # Compute policy loss
+        policy_loss = -(selected_log_probs * min_q).mean()
         
-        # Update policy
+        # Add entropy for exploration
+        policy_loss -= self.entropy_weight * entropy.mean()
+        
+        # Add regularization to prevent overfitting
+        # L2 regularization on the policy network weights
+        l2_reg = 0.0
+        reg_weight = 0.0001  # Start with a small value
+        for param in self.policy.parameters():
+            l2_reg += torch.norm(param)**2
+        policy_loss += reg_weight * l2_reg
+        
+        # Additional regularization: diversity loss to prevent converging to a single action
+        # This encourages maintaining some probability of selecting different actions
+        action_probs = F.softmax(logits, dim=-1)
+        uniform_probs = torch.ones_like(action_probs) / self.action_dim
+        diversity_loss = F.kl_div(action_probs.log(), uniform_probs, reduction='batchmean')
+        
+        diversity_weight = 0.01  # Weight for the diversity loss
+        policy_loss -= diversity_weight * diversity_loss  # Subtract because we want to maximize diversity
+        
+        # Optimize policy
         self.policy_optimizer.zero_grad()
         policy_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
+        
+        # Gradient clipping to prevent exploding gradients
+        nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
+        
         self.policy_optimizer.step()
         
-        return policy_loss.item(), advantage
+        return policy_loss.item(), entropy.mean().item()
     
     def _update_transformer(self, signals, neighbor_actions, beliefs, 
                 next_signals):
@@ -693,15 +740,24 @@ class FURTHERPlusAgent:
             'target_q_network1': self.target_q_network1.state_dict(),
             'target_q_network2': self.target_q_network2.state_dict(),
             'gain_parameter': self.gain_parameter,
-            'use_gnn': self.use_gnn
+            'use_gnn': self.use_gnn,
+            'agent_id': self.agent_id,
+            'num_agents': self.num_agents,
+            'num_states': self.num_states,
+            'action_dim': self.action_dim,
+            'latent_dim': self.latent_dim
         }
         
         # Save the appropriate inference module
         if self.use_gnn:
             checkpoint['inference_module'] = self.inference_module.state_dict()
+            # Also save feature adapter if it exists
+            if hasattr(self.inference_module, 'feature_adapter'):
+                checkpoint['has_feature_adapter'] = True
         else:
             checkpoint['encoder'] = self.encoder.state_dict()
             checkpoint['decoder'] = self.decoder.state_dict()
+            checkpoint['has_feature_adapter'] = False
         
         torch.save(checkpoint, path)
     
@@ -714,6 +770,60 @@ class FURTHERPlusAgent:
             evaluation_mode: If True, sets the model to evaluation mode after loading
         """
         checkpoint = torch.load(path, map_location=self.device)
+        
+        # Check if the saved model uses GNN or not
+        saved_model_uses_gnn = checkpoint.get('use_gnn', False)
+        
+        # Handle architecture mismatch between saved model and current instance
+        if saved_model_uses_gnn != self.use_gnn:
+            print(f"Warning: Architecture mismatch - Saved model uses GNN: {saved_model_uses_gnn}, Current model uses GNN: {self.use_gnn}")
+            print("Adapting architecture to match saved model...")
+            self.use_gnn = saved_model_uses_gnn
+            
+            # Re-initialize appropriate inference module based on saved model type
+            if saved_model_uses_gnn:
+                self.inference_module = TemporalGNN(
+                    hidden_dim=self.latent_dim,  # Use latent_dim as hidden_dim for simplicity
+                    action_dim=self.action_dim,
+                    latent_dim=self.latent_dim,
+                    num_agents=self.num_agents,
+                    device=self.device,
+                    num_belief_states=self.num_states,
+                    num_gnn_layers=2,  # Default value
+                    num_attn_heads=4,  # Default value
+                    dropout=0.1,
+                    temporal_window_size=5  # Default value
+                ).to(self.device)
+                
+                # Update the optimizer
+                self.inference_optimizer = torch.optim.Adam(
+                    self.inference_module.parameters(),
+                    lr=1e-3  # Default learning rate
+                )
+            else:
+                self.encoder = EncoderNetwork(
+                    action_dim=self.action_dim,
+                    latent_dim=self.latent_dim,
+                    hidden_dim=self.latent_dim,  # Use latent_dim as hidden_dim for simplicity
+                    num_agents=self.num_agents,
+                    device=self.device,
+                    num_belief_states=self.num_states
+                ).to(self.device)
+                
+                self.decoder = DecoderNetwork(
+                    action_dim=self.action_dim,
+                    latent_dim=self.latent_dim,
+                    hidden_dim=self.latent_dim,  # Use latent_dim as hidden_dim for simplicity
+                    num_agents=self.num_agents,
+                    num_belief_states=self.num_states,
+                    device=self.device
+                ).to(self.device)
+                
+                # Update the optimizer
+                self.inference_optimizer = torch.optim.Adam(
+                    list(self.encoder.parameters()) + list(self.decoder.parameters()),
+                    lr=1e-3  # Default learning rate
+                )
         
         # Check if we're loading a GRU model into a Transformer model
         is_gru_to_transformer = False
@@ -731,14 +841,30 @@ class FURTHERPlusAgent:
             
         # Load other components that should be compatible
         try:
-            if self.use_gnn:
-                self.inference_module.load_state_dict(checkpoint['inference_module'])
-            else:
-                self.encoder.load_state_dict(checkpoint['encoder'])
-                self.decoder.load_state_dict(checkpoint['decoder'])
             self.policy.load_state_dict(checkpoint['policy'])
+            print("Successfully loaded policy network.")
         except RuntimeError as e:
-            print(f"Warning: Could not load some components: {e}")
+            print(f"Warning: Could not load policy network: {e}")
+            print("Policy network will be randomly initialized.")
+            
+        # Handle inference module loading
+        try:
+            if self.use_gnn:
+                if 'inference_module' in checkpoint:
+                    self.inference_module.load_state_dict(checkpoint['inference_module'])
+                    print("Successfully loaded GNN inference module.")
+                else:
+                    print("Warning: No GNN module found in checkpoint. Using initialized GNN.")
+            else:
+                if 'encoder' in checkpoint and 'decoder' in checkpoint:
+                    self.encoder.load_state_dict(checkpoint['encoder'])
+                    self.decoder.load_state_dict(checkpoint['decoder'])
+                    print("Successfully loaded encoder-decoder modules.")
+                else:
+                    print("Warning: No encoder-decoder modules found in checkpoint.")
+        except RuntimeError as e:
+            print(f"Warning: Could not load inference components: {e}")
+            print("Inference components will use initialized weights.")
             
         # Handle Q-networks
         try:
@@ -746,14 +872,18 @@ class FURTHERPlusAgent:
             self.q_network2.load_state_dict(checkpoint['q_network2'])
             self.target_q_network1.load_state_dict(checkpoint['target_q_network1'])
             self.target_q_network2.load_state_dict(checkpoint['target_q_network2'])
+            print("Successfully loaded Q-networks.")
         except RuntimeError as e:
-            print(f"Warning: Could not load Q-networks due to architecture changes: {e}")
-            print("Initializing new Q-networks. You may need to retrain the model.")
+            print(f"Warning: Could not load Q-networks: {e}")
+            print("Q-networks will use initialized weights.")
         
+        # Load gain parameter
         try:
-            self.gain_parameter.data = checkpoint['gain_parameter']
-        except:
-            print("Warning: Could not load gain parameter.")
+            if 'gain_parameter' in checkpoint:
+                self.gain_parameter.data = checkpoint['gain_parameter']
+                print("Successfully loaded gain parameter.")
+        except Exception as e:
+            print(f"Warning: Could not load gain parameter: {e}")
         
         # Reset internal state after loading
         self.reset_internal_state()
@@ -770,7 +900,7 @@ class FURTHERPlusAgent:
         if is_gru_to_transformer:
             print("Knowledge transfer from GRU to Transformer attempted.")
             print("For best performance, you should retrain the model for a few episodes.")
-            
+    
     def _transfer_gru_to_transformer_knowledge(self, checkpoint):
         """
         Transfer knowledge from a GRU model to a Transformer model.

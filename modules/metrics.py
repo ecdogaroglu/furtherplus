@@ -48,7 +48,12 @@ def update_metrics(metrics, info, env, actions, action_probs, step, training):
     
     # Debug info about incorrect_prob on first step
     if step == 0:
-        print(f"First step incorrect_prob value: {np.array2string(np.array(info['incorrect_prob']), precision=2)}")
+        if isinstance(info['incorrect_prob'], list):
+            # Format as a more readable array with 2 decimal places
+            formatted_probs = [f"{p:.2f}" for p in info['incorrect_prob']]
+            print(f"First step incorrect_prob value: {formatted_probs}")
+        else:
+            print(f"First step incorrect_prob value: {info['incorrect_prob']:.2f}")
     
     # Store incorrect probabilities
     store_incorrect_probabilities(metrics, info, env.num_agents)

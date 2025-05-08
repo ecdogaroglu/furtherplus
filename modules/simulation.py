@@ -94,6 +94,13 @@ def run_agents(env, args, training=True, model_path=None):
             output_dir, training
         )
         
+        # Mark the end of this episode in the replay buffers
+        if training:
+            for agent_id, buffer in replay_buffers.items():
+                buffer.end_trajectory()
+                print(f"Marked end of episode {episode+1} in replay buffer for agent {agent_id}")
+                print(f"Buffer now contains {len(buffer.episode_indices)} complete episodes")
+        
         # Store this episode's metrics separately
         episodic_metrics['episodes'].append(episode_metrics)
     
@@ -150,6 +157,13 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
     
     # Print the true state
     print(f"True state for this episode: {env.true_state}")
+    
+    # AUGMENTATION: If training, occasionally introduce synthetic state variations
+    # This helps prevent overfitting to a specific state within an episode
+    should_augment = training and getattr(args, 'use_state_augmentation', False)
+    augmentation_frequency = getattr(args, 'augmentation_frequency', 10)
+    synthetic_state_prob = getattr(args, 'synthetic_state_prob', 0.2)
+    original_true_state = env.true_state
         
     # Set global metrics for access in other functions
     set_metrics(metrics)
@@ -167,6 +181,17 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
     # Main simulation loop
     steps_iterator = tqdm(range(args.horizon), desc="Training" if training else "Evaluating")
     for step in steps_iterator:
+        # AUGMENTATION: Occasionally introduce synthetic state variations during training
+        if should_augment and training and step > 0 and step % augmentation_frequency == 0:
+            if np.random.random() < synthetic_state_prob:
+                # Temporarily switch to a different state to introduce variability
+                temp_state = (env.true_state + 1) % env.num_states
+                env.true_state = temp_state
+                print(f"[Augmentation] Temporarily using synthetic state: {temp_state} at step {step}")
+            else:
+                # Restore original state
+                env.true_state = original_true_state
+        
         # Get agent actions
         actions, action_probs = select_agent_actions(agents, metrics)
         
@@ -195,6 +220,10 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
         # Save models periodically if training
         if training and args.save_model and (step + 1) % max(1, args.horizon // 5) == 0:
             save_checkpoint_models(agents, output_dir, step)
+        
+        # AUGMENTATION: Reset to original state at the end of each augmentation cycle
+        if should_augment and training and (step + 1) % augmentation_frequency == 0:
+            env.true_state = original_true_state
         
         if done:
             break
