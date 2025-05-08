@@ -147,7 +147,7 @@ class FURTHERPlusAgent:
         # Separate GRU optimizer - only for belief processor
         self.gru_optimizer = torch.optim.Adam(
             self.belief_processor.parameters(),
-            lr=learning_rate * 0.5  # Slower learning rate for stability
+            lr=learning_rate   # Slower learning rate for stability
         )
         
         self.q_optimizer = torch.optim.Adam(
@@ -162,8 +162,8 @@ class FURTHERPlusAgent:
         self.gain_optimizer = torch.optim.Adam([self.gain_parameter], lr=learning_rate)
         
         # Initialize belief and latent states with correct shapes
-        self.current_belief = torch.zeros(1, 1, belief_dim, device=device)  # [1, batch_size=1, hidden_dim]
-        self.current_latent = torch.zeros(1, latent_dim, device=device)
+        self.current_belief = torch.ones(1, 1, belief_dim, device=device) / self.belief_processor.hidden_dim  # [1, batch_size=1, hidden_dim]
+        self.current_latent = torch.ones(1, latent_dim, device=device) / self.encoder.fc_mean.out_features  # [1, latent_dim]
         self.current_mean = torch.zeros(1, latent_dim, device=device)
         self.current_logvar = torch.zeros(1, latent_dim, device=device)
         
@@ -353,11 +353,15 @@ class FURTHERPlusAgent:
             
             # Update policy (with advantage for GRU)
             policy_result = self._update_policy(beliefs, latents, actions, neighbor_actions)
-            policy_loss, advantage = policy_result
+            policy_loss, _ = policy_result
             total_policy_loss += policy_loss
             
             # Update GRU with advantage
-            gru_loss = self._update_gru(signals, neighbor_actions, beliefs, latents, actions, advantage)
+            gru_loss = self._update_gru(
+                signals, 
+                neighbor_actions, 
+                beliefs,
+                next_signals)
             total_gru_loss += gru_loss
             
             # Update Q-networks
@@ -532,27 +536,34 @@ class FURTHERPlusAgent:
         
         return policy_loss.item(), advantage
     
-    def _update_gru(self, signals, neighbor_actions, beliefs, latents, actions, advantage):
-        """Update belief processor (GRU) using advantage-based loss."""
-        # Don't update if advantage is not valid
-        if advantage is None or torch.isnan(advantage).any() or torch.isinf(advantage).any():
-            return 0.0
+    def _update_gru(self, signals, neighbor_actions, beliefs, 
+                next_signals):
+        """
+        Update belief processor (GRU) by optimizing for next state prediction.
         
-        # Use the beliefs directly from the replay buffer
-        # This is much simpler than trying to reprocess observations
+        Args:
+            signals: Current signals/observations
+            neighbor_actions: Current neighbor actions
+            beliefs: Current belief states
+            latents: Current latent states
+            actions: Actions taken
+            next_signals: Next signals/observations
         
-        # Calculate policy logits using the beliefs from the buffer
-        action_logits = self.policy(beliefs, latents)
-        log_probs = F.log_softmax(action_logits, dim=1)
+        Returns:
+            float: Loss value
+        """
+        # Process current signals and neighbor actions through GRU to get next belief
+        _, belief_distributions = self.belief_processor(
+            signals, neighbor_actions, beliefs
+        )
         
-        # Get log probabilities of actual actions taken
-        action_log_probs = log_probs.gather(1, actions.unsqueeze(1))
-        
-        # Weight log probabilities by advantage (higher advantage = more weight)
-        # This is similar to policy gradient with advantage weighting
-        # Higher advantage means the action was better than expected, so reinforce that belief mapping
-        gru_loss = -(action_log_probs * advantage.detach()).mean()
-        
+        # The belief distribution should predict the next observation (signal)
+        # Log likelihood of next signal given current belief
+        # Use belief distribution as prediction of next signal
+        gru_loss = F.binary_cross_entropy(
+            belief_distributions, next_signals, reduction='none'
+        ).sum(dim=1).mean()
+                
         # Update GRU parameters
         self.gru_optimizer.zero_grad()
         gru_loss.backward()
