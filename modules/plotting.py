@@ -285,7 +285,7 @@ def plot_mean_incorrect_action_probabilities_with_ci(
                 fig=fig,
                 filename=base_path,
                 dpi=300,
-                formats=['pdf', 'png']
+                formats=['png']
             )
             
             plt.close()
@@ -532,7 +532,7 @@ def plot_incorrect_action_probabilities(
                 fig=fig,
                 filename=base_path,
                 dpi=300,
-                formats=['pdf', 'png']
+                formats=['png']
             )
             
             plt.close()
@@ -776,7 +776,7 @@ def plot_agent_actions(actions, true_states, title, save_path=None, episode_leng
                 fig=fig,
                 filename=base_path,
                 dpi=300,
-                formats=['pdf', 'png']
+                formats=['png']
             )
             
             plt.close()

@@ -270,12 +270,17 @@ class FURTHERPlusAgent:
         
         # Sample based on reparameterized distribution 
         # Ref: https://github.com/kampta/pytorch-distributions/blob/master/gaussian_vae.py
+        # Add numerical stability safeguards
+        # First, clamp logvar to prevent extreme values
+        logvar = torch.clamp(logvar, min=-20.0, max=2.0)
+        
+        # Then calculate variance with better safety measures
         var = torch.exp(0.5 * logvar)
         epsilon = 1e-6
-        var = var.clamp(min=epsilon)
+        var = torch.clamp(var, min=epsilon, max=1e6)  # Also add maximum bound
         distribution = torch.distributions.Normal(mean, var)
         new_latent = distribution.rsample()
-        
+            
         # Store the current latent, mean, logvar, and opponent belief distribution
         self.current_latent = new_latent.unsqueeze(0)
         self.current_mean = mean
@@ -303,6 +308,9 @@ class FURTHERPlusAgent:
         dist = torch.distributions.Categorical(action_probs)
         action = dist.sample().item()
         
+        # Alternatively, use argmax for deterministic action selection
+        #action = action_probs.argmax(dim=-1).item()
+
         
         return action, action_probs.squeeze(0).detach().cpu().numpy()
     
@@ -394,16 +402,8 @@ class FURTHERPlusAgent:
         # Calculate reconstruction loss
         recon_loss = F.cross_entropy(batch_neighbor_logits, neighbor_actions)
         
-        # Get sequential latent parameters for temporal KL calculation
-        means_seq, logvars_seq = self.replay_buffer.get_sequential_latent_params()
-        
-        if means_seq is not None and logvars_seq is not None and means_seq.size(0) > 1:
-            # Calculate temporal KL divergence (FURTHER-style)
-            kl_loss = self._calculate_temporal_kl_divergence(means_seq, logvars_seq)
-        else:
-            # Fall back to standard KL if not enough sequential data
-            kl_loss = -0.5 * torch.sum(1 + logvars - means.pow(2) - logvars.exp()) / means.size(0)
-            kl_loss = self.kl_weight * kl_loss
+        # Calculate temporal KL divergence (FURTHER-style)
+        kl_loss = self._calculate_temporal_kl_divergence(means, logvars)
         
         # Total loss
         inference_loss = recon_loss + kl_loss
@@ -421,10 +421,11 @@ class FURTHERPlusAgent:
     
     def _calculate_temporal_kl_divergence(self, means_seq, logvars_seq):
         """Calculate KL divergence between sequential latent states (temporal smoothing)."""
-        if means_seq.size(0) < 2:
-            return torch.tensor(0.0, device=self.device)
-        
-        # KL(N(mu_t, var_t), N(mu_{t+1}, var_{t+1}))
+
+        # KL(N(mu,E), N(m, S)) = 0.5 * (log(|S|/|E|) - K + tr(S^-1 E) + (m - mu)^T S^-1 (m - mu)))
+        # Ref: https://github.com/lmzintgraf/varibad/blob/master/vae.py
+        # Ref: https://github.com/dkkim93/further/blob/main/algorithm/further/agent.py
+
         kl_first_term = torch.sum(logvars_seq[:-1, :], dim=-1) - torch.sum(logvars_seq[1:, :], dim=-1)
         kl_second_term = self.latent_dim
         kl_third_term = torch.sum(1. / torch.exp(logvars_seq[:-1, :]) * torch.exp(logvars_seq[1:, :]), dim=-1)
@@ -432,6 +433,7 @@ class FURTHERPlusAgent:
         kl_fourth_term = kl_fourth_term.sum(dim=-1)
         
         kl = 0.5 * (kl_first_term - kl_second_term + kl_third_term + kl_fourth_term)
+
         return self.kl_weight * torch.mean(kl)
     
     def _update_critics(self, signals, neighbor_actions, beliefs, latents, actions, next_neighbor_actions, rewards, next_signals, next_beliefs, next_latents):

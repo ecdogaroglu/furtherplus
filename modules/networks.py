@@ -212,7 +212,6 @@ class DecoderNetwork(nn.Module):
         
         """Predict peer actions from observation and latent."""
         # Handle different dimensions
-        print(f"Decoder input shapes - signal: {signal.shape}, latent: {latent.shape}")
         if latent.dim() == 3:  # [batch_size, 1, latent_dim]
             latent = latent.squeeze(0)
         
@@ -319,13 +318,9 @@ class QNetwork(nn.Module):
             belief = belief.squeeze(0)
         if latent.dim() == 3:  # [batch_size, 1, latent_dim]
             latent = latent.squeeze(0)
-        
-        print(f"QNetwork input shapes - belief: {belief.shape}, latent: {latent.shape}, neighbor_actions: {neighbor_actions.shape if neighbor_actions is not None else None}")
 
         # Combine inputs
         combined = torch.cat([belief, latent, neighbor_actions], dim=1)
-
-        print(f"Combined input shape: {combined.shape}")
         
         # Forward pass
         x = F.relu(self.fc1(combined))

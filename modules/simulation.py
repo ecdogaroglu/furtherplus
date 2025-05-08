@@ -173,7 +173,6 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
             agents, observations, next_observations, actions, rewards, 
             replay_buffers, metrics, env, args, training, step
         )
-        print(f"Step {step} - Observations: {observations}, next Observations: {next_observations}, Actions: {actions}, Rewards: {rewards}")
         
         # Update observations for next step
         observations = next_observations
@@ -196,9 +195,6 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
     print(f"{mode_str.capitalize()} completed in {total_time:.2f} seconds")
     
     return observations, metrics
-
-
-
 
 def update_agent_states(agents, observations, next_observations, actions, rewards, 
                         replay_buffers, metrics, env, args, training, step):
@@ -236,7 +232,6 @@ def update_agent_states(agents, observations, next_observations, actions, reward
 
         # Update agent belief state
         next_belief, next_dstr = agent.observe(signal_encoded, actions_encoded)
-        print(signal_encoded, actions_encoded)
         # Infer latent state for next observation
         # This ensures we're using the correct latent state for the next observation
         next_latent = agent.infer_latent(
@@ -246,7 +241,6 @@ def update_agent_states(agents, observations, next_observations, actions, reward
             next_signal_encoded
         )
             
-        print(f"Step {step}: Agent {agent_id} observed signal {signal} resulting in belief distribution {next_dstr.tolist()}")
         # Store internal states for visualization if requested (for both training and evaluation)
 
         if args.plot_internal_states and 'belief_states' in metrics:

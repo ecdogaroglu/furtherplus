@@ -48,19 +48,10 @@ def update_metrics(metrics, info, env, actions, action_probs, step, training):
     
     # Debug info about incorrect_prob on first step
     if step == 0:
-        print(f"First step incorrect_prob type: {type(info['incorrect_prob'])}")
-        print(f"First step incorrect_prob value: {info['incorrect_prob']}")
-        if isinstance(info['incorrect_prob'], list):
-            print(f"First step incorrect_prob length: {len(info['incorrect_prob'])}")
+        print(f"First step incorrect_prob value: {np.array2string(np.array(info['incorrect_prob']), precision=2)}")
     
     # Store incorrect probabilities
     store_incorrect_probabilities(metrics, info, env.num_agents)
-    
-    # Debug info about action_probs on first step
-    if step == 0:
-        print(f"First step action_probs keys: {list(metrics['action_probs'].keys())}")
-        for agent_id in metrics['action_probs']:
-            print(f"Agent {agent_id} action_probs length: {len(metrics['action_probs'][agent_id])}")
     
     # Store full action probability distributions
     for agent_id, probs in action_probs.items():
@@ -262,7 +253,7 @@ def print_debug_info_for_plotting(agent_incorrect_probs):
     for agent_id, probs in agent_incorrect_probs.items():
         print(f"Agent {agent_id}: {len(probs)} data points")
         if len(probs) > 0:
-            print(f"  First few values: {probs[:5]}")
-            print(f"  Last few values: {probs[-5:]}")
+            print(f"  First few values: {np.array2string(np.array(probs[:5]), precision=2)}")
+            print(f"  Last few values: {np.array2string(np.array(probs[-5:]), precision=2)}")
         else:
             print(f"  No data points for agent {agent_id}")
