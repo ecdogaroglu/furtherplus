@@ -1,6 +1,6 @@
 # FURTHER+ Social Learning Framework
 
-A modular deep reinforcement learning framework for multi-agent social learning and coordination.
+A modular deep reinforcement learning framework for multi-agent social learning and coordination, extending the [FURTHER](https://github.com/dkkim93/further) framework by Dong-Ki Kim et al.
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/release/python-380/)
 [![PyTorch 1.8+](https://img.shields.io/badge/pytorch-1.8+-orange.svg)](https://pytorch.org/)
@@ -9,6 +9,8 @@ A modular deep reinforcement learning framework for multi-agent social learning 
 
 FURTHER+ (FUlly Reinforcing acTive influence witH averagE
 Reward Plus) is a framework designed to study how agents learn from each other in social networks. It implements a multi-agent reinforcement learning environment where agents must coordinate their actions based on partial observations and neighbor interactions within configurable network topologies.
+
+This framework extends the original [FURTHER](https://arxiv.org/pdf/2203.03535.pdf) framework (Kim et al., NeurIPS 2022) with enhanced capabilities specifically for social learning scenarios. While the original FURTHER focused on influencing long-term behavior in multiagent reinforcement learning, FURTHER+ adds specialized components for belief modeling, information propagation through networks, and advantage-weighted GRU training.
 
 The framework enables researchers to investigate emergent social learning phenomena, information diffusion dynamics, and collective intelligence in artificial agent networks.
 
@@ -30,7 +32,7 @@ The framework enables researchers to investigate emergent social learning phenom
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/furtherplus.git
+git clone https://github.com/ecdogaroglu/furtherplus.git
 cd furtherplus
 
 # Install dependencies
@@ -190,6 +192,21 @@ If you use FURTHER+ in your research, please cite:
 }
 ```
 
+And also cite the original FURTHER framework:
+
+```bibtex
+@inproceedings{kim2022further,
+  title={Influencing Long-Term Behavior in Multiagent Reinforcement Learning},
+  author={Kim, Dong-Ki and Riemer, Matthew D and Liu, Miao and Foerster, Jakob Nicolaus and Everett, Michael and Sun, Chuangchuang and Tesauro, Gerald and How, Jonathan P},
+  booktitle={Advances in Neural Information Processing Systems},
+  editor={Oh, Alice H. and Agarwal, Alekh and Belgrave, Danielle and Cho, Kyunghyun},
+  year={2022},
+  url={https://openreview.net/forum?id=_S9amb2-M-I}
+}
+```
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+The original FURTHER framework is also licensed under the MIT License, Copyright (c) 2022 Dong-Ki Kim.
