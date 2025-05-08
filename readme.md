@@ -7,7 +7,8 @@ A modular deep reinforcement learning framework for multi-agent social learning 
 
 ## Overview
 
-FURTHER+ (Flexible Unsupervised Reinforcement learning with Transformative Hidden Embedding Representations) is a framework designed to study how agents learn from each other in social networks. It implements a multi-agent reinforcement learning environment where agents must coordinate their actions based on partial observations and neighbor interactions within configurable network topologies.
+FURTHER+ (FUlly Reinforcing acTive influence witH averagE
+Reward Plus) is a framework designed to study how agents learn from each other in social networks. It implements a multi-agent reinforcement learning environment where agents must coordinate their actions based on partial observations and neighbor interactions within configurable network topologies.
 
 The framework enables researchers to investigate emergent social learning phenomena, information diffusion dynamics, and collective intelligence in artificial agent networks.
 
