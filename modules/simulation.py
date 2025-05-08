@@ -55,7 +55,7 @@ def run_agents(env, args, training=True, model_path=None):
     # Initialize agents and metrics
     obs_dim = calculate_observation_dimension(env)
     agents = initialize_agents(env, args, obs_dim)
-    load_agent_models(agents, model_path, env.num_agents)
+    load_agent_models(agents, model_path, env.num_agents, training=training)
     metrics = initialize_metrics(env, args, training)
 
     # Calculate and display theoretical bounds
@@ -154,6 +154,13 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
     
     # Reset and initialize agent internal states
     reset_agent_internal_states(agents)
+    
+    # Set agents to appropriate mode
+    for agent_id, agent in agents.items():
+        if training:
+            agent.set_train_mode()
+        else:
+            agent.set_eval_mode()
     
     # Main simulation loop
     steps_iterator = tqdm(range(args.horizon), desc="Training" if training else "Evaluating")

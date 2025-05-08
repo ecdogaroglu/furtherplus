@@ -215,6 +215,28 @@ class FURTHERPlusAgent:
             next_observation, next_belief, next_latent, mean, logvar, neighbor_actions
         )
         
+    def set_train_mode(self):
+        """Set all networks to training mode."""
+        self.belief_processor.train()
+        self.encoder.train()
+        self.decoder.train()
+        self.policy.train()
+        self.q_network1.train()
+        self.q_network2.train()
+        self.target_q_network1.train()
+        self.target_q_network2.train()
+        
+    def set_eval_mode(self):
+        """Set all networks to evaluation mode."""
+        self.belief_processor.eval()
+        self.encoder.eval()
+        self.decoder.eval()
+        self.policy.eval()
+        self.q_network1.eval()
+        self.q_network2.eval()
+        self.target_q_network1.eval()
+        self.target_q_network2.eval()
+        
     def reset_internal_state(self):
         """Reset the agent's internal state (belief and latent variables)."""
         # Use zeros for a complete reset with correct shapes
@@ -601,16 +623,38 @@ class FURTHERPlusAgent:
             'gain_parameter': self.gain_parameter.data,
         }, path)
     
-    def load(self, path):
-        """Load agent model."""
+    def load(self, path, evaluation_mode=False):
+        """
+        Load agent model.
+        
+        Args:
+            path: Path to the saved model
+            evaluation_mode: If True, sets the model to evaluation mode after loading
+        """
         checkpoint = torch.load(path, map_location=self.device)
         
-        # Load components
-        self.belief_processor.load_state_dict(checkpoint['belief_processor'])
-        self.encoder.load_state_dict(checkpoint['encoder'])
-        self.decoder.load_state_dict(checkpoint['decoder'])
-        self.policy.load_state_dict(checkpoint['policy'])
-        
+        # Check if we're loading a GRU model into a Transformer model
+        is_gru_to_transformer = False
+        try:
+            # Try to load belief processor (may fail if architecture changed from GRU to Transformer)
+            self.belief_processor.load_state_dict(checkpoint['belief_processor'])
+        except RuntimeError as e:
+            print(f"Warning: Could not load belief processor due to architecture change: {e}")
+            print("Using the new Transformer belief processor with initialized weights.")
+            print("Attempting to transfer knowledge from GRU to Transformer...")
+            is_gru_to_transformer = True
+            
+            # Try to transfer knowledge from GRU to Transformer
+            self._transfer_gru_to_transformer_knowledge(checkpoint)
+            
+        # Load other components that should be compatible
+        try:
+            self.encoder.load_state_dict(checkpoint['encoder'])
+            self.decoder.load_state_dict(checkpoint['decoder'])
+            self.policy.load_state_dict(checkpoint['policy'])
+        except RuntimeError as e:
+            print(f"Warning: Could not load some components: {e}")
+            
         # Handle Q-networks
         try:
             self.q_network1.load_state_dict(checkpoint['q_network1'])
@@ -621,10 +665,60 @@ class FURTHERPlusAgent:
             print(f"Warning: Could not load Q-networks due to architecture changes: {e}")
             print("Initializing new Q-networks. You may need to retrain the model.")
         
-        self.gain_parameter.data = checkpoint['gain_parameter']
+        try:
+            self.gain_parameter.data = checkpoint['gain_parameter']
+        except:
+            print("Warning: Could not load gain parameter.")
         
         # Reset internal state after loading
         self.reset_internal_state()
+        
+        # Set the model to evaluation mode if requested
+        if evaluation_mode:
+            self.set_eval_mode()
+            print(f"Model set to evaluation mode.")
+        else:
+            self.set_train_mode()
+            print(f"Model set to training mode.")
+        
+        # If we transferred from GRU to Transformer, recommend retraining
+        if is_gru_to_transformer:
+            print("Knowledge transfer from GRU to Transformer attempted.")
+            print("For best performance, you should retrain the model for a few episodes.")
+            
+    def _transfer_gru_to_transformer_knowledge(self, checkpoint):
+        """
+        Transfer knowledge from a GRU model to a Transformer model.
+        This helps preserve some of the learned knowledge when switching architectures.
+        """
+        try:
+            # The most important part to transfer is the belief head weights
+            # which map from hidden state to belief distribution
+            if 'belief_processor' in checkpoint:
+                gru_state_dict = checkpoint['belief_processor']
+                
+                # Transfer belief head weights if they have the same dimensions
+                if 'belief_head.weight' in gru_state_dict and gru_state_dict['belief_head.weight'].size() == self.belief_processor.belief_head.weight.size():
+                    self.belief_processor.belief_head.weight.data.copy_(gru_state_dict['belief_head.weight'])
+                    self.belief_processor.belief_head.bias.data.copy_(gru_state_dict['belief_head.bias'])
+                    print("Successfully transferred belief head weights from GRU to Transformer.")
+                    
+                # We can also try to initialize the input projection with GRU input weights
+                if 'gru.weight_ih_l0' in gru_state_dict:
+                    # The input weights of GRU can be used to initialize part of the input projection
+                    gru_input_weights = gru_state_dict['gru.weight_ih_l0']
+                    input_dim = min(gru_input_weights.size(1), self.belief_processor.input_projection.weight.size(1))
+                    output_dim = min(gru_input_weights.size(0) // 3, self.belief_processor.input_projection.weight.size(0))
+                    
+                    # Copy the reset gate weights (first third of GRU weights)
+                    self.belief_processor.input_projection.weight.data[:output_dim, :input_dim].copy_(
+                        gru_input_weights[:output_dim, :input_dim]
+                    )
+                    print("Partially initialized Transformer input projection with GRU weights.")
+                    
+        except Exception as e:
+            print(f"Error during knowledge transfer: {e}")
+            print("Continuing with randomly initialized Transformer.")
 
     def get_belief_state(self):
         """Return the current belief state.

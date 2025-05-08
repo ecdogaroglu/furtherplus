@@ -237,9 +237,16 @@ def create_output_directory(args, env, training):
     return output_dir
 
 
-def load_agent_models(agents, model_path, num_agents):
-    """Load pre-trained models if a path is provided."""
+def load_agent_models(agents, model_path, num_agents, training=True):
+    """
+    Load pre-trained models if a path is provided.
     
+    Args:
+        agents: Dictionary of agent objects
+        model_path: Path to the directory containing model files
+        num_agents: Number of agents to load models for
+        training: Whether the models will be used for training (True) or evaluation (False)
+    """
     # If no model path is provided, skip loading
     if model_path is None:
         print("No model path provided. Starting with fresh models.")
@@ -255,13 +262,16 @@ def load_agent_models(agents, model_path, num_agents):
         model_file = model_dir / f"agent_{agent_id}.pt"
         if model_file.exists():
             print(f"Loading model for agent {agent_id} from {model_file}")
-            agents[agent_id].load(str(model_file))
+            # Set evaluation_mode=True if we're loading for evaluation
+            agents[agent_id].load(str(model_file), evaluation_mode=not training)
             models_loaded += 1
         else:
             print(f"Warning: Model file {model_file} not found")
     
     if models_loaded == 0:
         print(f"No model files found in directory {model_dir} for any of the {num_agents} agents")
+    else:
+        print(f"Successfully loaded {models_loaded} models in {'training' if training else 'evaluation'} mode")
 
 
 def calculate_theoretical_bounds(env):

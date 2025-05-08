@@ -109,20 +109,22 @@ class TransformerBeliefProcessor(nn.Module):
             sequence = torch.cat([context, projected], dim=1)
         else:
             sequence = projected
+        
+        # Process through transformer with appropriate mode (training or evaluation)
+        # In evaluation mode, this will use different behavior for dropout
+        with torch.set_grad_enabled(self.training):
+            transformer_output = self.transformer_encoder(sequence)
             
-        # Process through transformer
-        transformer_output = self.transformer_encoder(sequence)
-        
-        # Take the last token's output as the new belief state
-        new_belief = transformer_output[:, -1:, :].transpose(0, 1)
-        
-        # Calculate belief distribution
-        logits = self.belief_head(new_belief.squeeze(0))
-        temperature = 0.5  # Temperature for softmax
-        belief_distribution = F.softmax(logits/temperature, dim=-1)
-        
-        # Ensure new_belief maintains shape [1, batch_size, hidden_dim]
-        new_belief = self.standardize_belief_state(new_belief)
+            # Take the last token's output as the new belief state
+            new_belief = transformer_output[:, -1:, :].transpose(0, 1)
+            
+            # Calculate belief distribution
+            logits = self.belief_head(new_belief.squeeze(0))
+            temperature = 0.5  # Temperature for softmax
+            belief_distribution = F.softmax(logits/temperature, dim=-1)
+            
+            # Ensure new_belief maintains shape [1, batch_size, hidden_dim]
+            new_belief = self.standardize_belief_state(new_belief)
         
         return new_belief, belief_distribution
     
@@ -281,7 +283,7 @@ class PolicyNetwork(nn.Module):
         self.action_dim = action_dim
         
         # Combined input: belief and latent
-        input_dim = belief_dim + latent_dim
+        input_dim = belief_dim 
         
         # Policy network layers
         self.fc1 = nn.Linear(input_dim, hidden_dim)
@@ -304,7 +306,7 @@ class PolicyNetwork(nn.Module):
         # For batched inputs
         if belief.dim() == 2 and latent.dim() == 2:
             # Combine inputs along feature dimension
-            combined = torch.cat([belief, latent], dim=1)
+            combined = torch.cat([belief], dim=1)
         # For single inputs
         else:
             # Ensure we have batch dimension
