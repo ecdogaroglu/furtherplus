@@ -22,15 +22,15 @@ def parse_args():
                         help='Number of episodes for training (true state is reset between episodes)')
     
     # Training parameters
-    parser.add_argument('--batch-size', type=int, default=64, help='Batch size')
+    parser.add_argument('--batch-size', type=int, default=128, help='Batch size')
     parser.add_argument('--buffer-capacity', type=int, default=1000, help='Replay buffer capacity')
     parser.add_argument('--learning-rate', type=float, default=1e-3, help='Learning rate')
-    parser.add_argument('--update-interval', type=int, default=1, help='Steps between updates')
+    parser.add_argument('--update-interval', type=int, default=10, help='Steps between updates')
     
     # Agent hyperparameters
-    parser.add_argument('--hidden-dim', type=int, default=128, help='Hidden layer dimension')
-    parser.add_argument('--belief-dim', type=int, default=128, help='Belief state dimension')
-    parser.add_argument('--latent-dim', type=int, default=128, help='Latent space dimension')
+    parser.add_argument('--hidden-dim', type=int, default=256, help='Hidden layer dimension')
+    parser.add_argument('--belief-dim', type=int, default=256, help='Belief state dimension')
+    parser.add_argument('--latent-dim', type=int, default=256, help='Latent space dimension')
     parser.add_argument('--discount-factor', type=float, default=0.9, 
                         help='Discount factor (0 = average reward)')
     parser.add_argument('--entropy-weight', type=float, default=0.5, help='Entropy bonus weight')
