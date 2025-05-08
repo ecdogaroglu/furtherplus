@@ -4,6 +4,7 @@ Core simulation logic for FURTHER+ experiments.
 
 import numpy as np
 import time
+import torch
 from tqdm import tqdm
 from modules.utils import (
     create_output_directory,
@@ -33,6 +34,7 @@ from modules.metrics import (
 )
 from modules.plotting import generate_plots
 from modules.agent import FURTHERPlusAgent
+from modules.networks import TemporalGNN
 from modules.replay_buffer import ReplayBuffer
 
 def run_agents(env, args, training=True, model_path=None):
@@ -296,10 +298,17 @@ def update_agent_states(agents, observations, next_observations, actions, reward
 def initialize_agents(env, args, obs_dim):
     """Initialize FURTHER+ agents."""
     print(f"Initializing {env.num_agents} agents{'...' if args.eval_only else ' for evaluation...'}")
+    
+    # Log if using GNN
+    if args.use_gnn:
+        print(f"Using Graph Neural Network with {args.gnn_layers} layers, {args.attn_heads} attention heads, and temporal window of {args.temporal_window}")
+    else:
+        print("Using traditional encoder-decoder inference module")
+        
     agents = {}
     
     for agent_id in range(env.num_agents):
-        agents[agent_id] = FURTHERPlusAgent(
+        agent = FURTHERPlusAgent(
             agent_id=agent_id,
             num_agents=env.num_agents,
             num_states=env.num_states,
@@ -312,8 +321,34 @@ def initialize_agents(env, args, obs_dim):
             discount_factor=args.discount_factor,
             entropy_weight=args.entropy_weight,
             kl_weight=args.kl_weight,
-            device=args.device
+            device=args.device,
+            buffer_capacity=args.buffer_capacity,
+            max_trajectory_length=args.horizon,
+            use_gnn=args.use_gnn
         )
+        
+        # If using GNN, update the inference module with the specified parameters
+        if args.use_gnn and hasattr(agent, 'inference_module'):
+            agent.inference_module = TemporalGNN(
+                hidden_dim=args.hidden_dim,
+                action_dim=env.num_states,
+                latent_dim=args.latent_dim,
+                num_agents=env.num_agents,
+                device=args.device,
+                num_belief_states=env.num_states,
+                num_gnn_layers=args.gnn_layers,
+                num_attn_heads=args.attn_heads,
+                dropout=0.1,
+                temporal_window_size=args.temporal_window
+            ).to(args.device)
+            
+            # Update the optimizer to use the new inference module
+            agent.inference_optimizer = torch.optim.Adam(
+                agent.inference_module.parameters(),
+                lr=args.learning_rate
+            )
+            
+        agents[agent_id] = agent
     
     return agents
 

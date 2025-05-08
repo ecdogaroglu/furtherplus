@@ -391,8 +391,8 @@ def get_neighbor_actions(actions, agent_id, env):
 
 def update_progress_display(steps_iterator, info, total_rewards, step, training):
     """Update the progress bar with current information."""
-    if 'mistake_rate' in info:
-        steps_iterator.set_postfix(mistake_rate=info['mistake_rate'])
+    if 'incorrect_prob' in info:
+        steps_iterator.set_postfix(incorrect_prob=info['incorrect_prob'])
     
     if training and step > 0 and step % 1000 == 0:
         avg_rewards = total_rewards / (step + 1)

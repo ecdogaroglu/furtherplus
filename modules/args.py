@@ -36,6 +36,16 @@ def parse_args():
     parser.add_argument('--entropy-weight', type=float, default=0.5, help='Entropy bonus weight')
     parser.add_argument('--kl-weight', type=float, default=10, help='KL weight for inference')
     
+    # Model type selection
+    parser.add_argument('--use-gnn', action='store_true', 
+                        help='Use Graph Neural Network with temporal attention')
+    parser.add_argument('--gnn-layers', type=int, default=2,
+                        help='Number of GNN layers')
+    parser.add_argument('--attn-heads', type=int, default=4,
+                        help='Number of attention heads in GNN')
+    parser.add_argument('--temporal-window', type=int, default=5,
+                        help='Temporal window size for GNN memory')
+    
     # Experiment settings
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--device', type=str, default=get_best_device(), 

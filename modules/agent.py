@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from modules.networks import EncoderNetwork, DecoderNetwork, PolicyNetwork, QNetwork, TransformerBeliefProcessor
+from modules.networks import EncoderNetwork, DecoderNetwork, PolicyNetwork, QNetwork, TransformerBeliefProcessor, TemporalGNN
 from modules.replay_buffer import ReplayBuffer
 from modules.utils import get_best_device, encode_observation
 
@@ -26,7 +26,8 @@ class FURTHERPlusAgent:
         target_update_rate=0.005,
         device=None,
         buffer_capacity=1000,
-        max_trajectory_length=50
+        max_trajectory_length=50,
+        use_gnn=True
     ):
         
         # Use the best available device if none is specified
@@ -45,6 +46,7 @@ class FURTHERPlusAgent:
         self.target_update_rate = target_update_rate
         self.max_trajectory_length = max_trajectory_length
         self.latent_dim = latent_dim
+        self.use_gnn = use_gnn
         
         # Global variables for action logits and neighbor action logits
         self.action_logits = None
@@ -71,23 +73,40 @@ class FURTHERPlusAgent:
             dropout=0.1  # Dropout rate
         ).to(device)
         
-        self.encoder = EncoderNetwork(
-            action_dim=action_dim,
-            latent_dim=latent_dim,
-            hidden_dim=hidden_dim,
-            num_agents=num_agents,
-            device=device,
-            num_belief_states=num_states
-        ).to(device)
-        
-        self.decoder = DecoderNetwork(
-            action_dim=action_dim,
-            latent_dim=latent_dim,
-            hidden_dim=hidden_dim,
-            num_agents=num_agents,
-            num_belief_states=num_states,
-            device=device
-        ).to(device)
+        # Initialize either the GNN or the traditional encoder-decoder
+        if self.use_gnn:
+            # Use the new TemporalGNN for inference learning
+            self.inference_module = TemporalGNN(
+                hidden_dim=hidden_dim,
+                action_dim=action_dim,
+                latent_dim=latent_dim,
+                num_agents=num_agents,
+                device=device,
+                num_belief_states=num_states,
+                num_gnn_layers=2,  # Default value, will be updated later if needed
+                num_attn_heads=4,  # Default value, will be updated later if needed
+                dropout=0.1,
+                temporal_window_size=5  # Default value, will be updated later if needed
+            ).to(device)
+        else:
+            # Use the traditional encoder-decoder approach
+            self.encoder = EncoderNetwork(
+                action_dim=action_dim,
+                latent_dim=latent_dim,
+                hidden_dim=hidden_dim,
+                num_agents=num_agents,
+                device=device,
+                num_belief_states=num_states
+            ).to(device)
+            
+            self.decoder = DecoderNetwork(
+                action_dim=action_dim,
+                latent_dim=latent_dim,
+                hidden_dim=hidden_dim,
+                num_agents=num_agents,
+                num_belief_states=num_states,
+                device=device
+            ).to(device)
         
         self.policy = PolicyNetwork(
             belief_dim=belief_dim,
@@ -158,15 +177,24 @@ class FURTHERPlusAgent:
             list(self.q_network2.parameters()),
             lr=learning_rate
         )
-        self.inference_optimizer = torch.optim.Adam(
-            list(self.encoder.parameters()) + list(self.decoder.parameters()),
-            lr=learning_rate
-        )
+        
+        # Set up inference optimizer based on which inference module we're using
+        if self.use_gnn:
+            self.inference_optimizer = torch.optim.Adam(
+                self.inference_module.parameters(),
+                lr=learning_rate
+            )
+        else:
+            self.inference_optimizer = torch.optim.Adam(
+                list(self.encoder.parameters()) + list(self.decoder.parameters()),
+                lr=learning_rate
+            )
+            
         self.gain_optimizer = torch.optim.Adam([self.gain_parameter], lr=learning_rate)
         
         # Initialize belief and latent states with correct shapes
         self.current_belief = torch.ones(1, 1, belief_dim, device=device) / self.belief_processor.hidden_dim  # [1, batch_size=1, hidden_dim]
-        self.current_latent = torch.ones(1, latent_dim, device=device) / self.encoder.fc_mean.out_features  # [1, latent_dim]
+        self.current_latent = torch.ones(1, latent_dim, device=device) / latent_dim  # [1, latent_dim]
         self.current_mean = torch.zeros(1, latent_dim, device=device)
         self.current_logvar = torch.zeros(1, latent_dim, device=device)
         
@@ -218,8 +246,11 @@ class FURTHERPlusAgent:
     def set_train_mode(self):
         """Set all networks to training mode."""
         self.belief_processor.train()
-        self.encoder.train()
-        self.decoder.train()
+        if self.use_gnn:
+            self.inference_module.train()
+        else:
+            self.encoder.train()
+            self.decoder.train()
         self.policy.train()
         self.q_network1.train()
         self.q_network2.train()
@@ -229,8 +260,11 @@ class FURTHERPlusAgent:
     def set_eval_mode(self):
         """Set all networks to evaluation mode."""
         self.belief_processor.eval()
-        self.encoder.eval()
-        self.decoder.eval()
+        if self.use_gnn:
+            self.inference_module.eval()
+        else:
+            self.encoder.eval()
+            self.decoder.eval()
         self.policy.eval()
         self.q_network1.eval()
         self.q_network2.eval()
@@ -241,27 +275,12 @@ class FURTHERPlusAgent:
         """Reset the agent's internal state (belief and latent variables)."""
         # Use zeros for a complete reset with correct shapes
         self.current_belief = torch.zeros(1, 1, self.belief_processor.hidden_dim, device=self.device)  # [1, batch_size=1, hidden_dim]
-        self.current_latent = torch.zeros(1, self.encoder.fc_mean.out_features, device=self.device)
-        self.current_mean = torch.zeros(1, self.encoder.fc_mean.out_features, device=self.device)
-        self.current_logvar = torch.zeros(1, self.encoder.fc_logvar.out_features, device=self.device)
+        self.current_latent = torch.zeros(1, self.latent_dim, device=self.device)
+        self.current_mean = torch.zeros(1, self.latent_dim, device=self.device)
+        self.current_logvar = torch.zeros(1, self.latent_dim, device=self.device)
         
         # Reset belief distribution 
         self.current_belief_distribution = torch.ones(1, self.belief_processor.num_belief_states, device=self.device) / self.belief_processor.num_belief_states
-        
-        # Reset opponent belief distribution 
-        self.current_opponent_belief_distribution = torch.ones(1, self.num_agents, device=self.device) / self.num_agents
-        
-        # Reset cached values to force recalculation
-        self.action_logits = None
-        self.neighbor_action_logits = None
-        
-        # Reset episode step counter
-        self.episode_step = 0
-        
-    def reset_cache(self):
-        """Reset cached values to force recalculation."""
-        self.action_logits = None
-        self.neighbor_action_logits = None
         
         # Detach all tensors to ensure no gradient flow between episodes
         self.current_belief = self.current_belief.detach()
@@ -273,8 +292,9 @@ class FURTHERPlusAgent:
         if hasattr(self, 'current_opponent_belief_distribution') and self.current_opponent_belief_distribution is not None:
             self.current_opponent_belief_distribution = self.current_opponent_belief_distribution.detach()
         
-        # No need to reset specific parameters for the transformer
-        # as it doesn't maintain hidden state like GRU does
+        # If using GNN, reset its temporal memory
+        if self.use_gnn:
+            self.inference_module.reset_memory()
     
     def infer_latent(self, signal, neighbor_actions, reward, next_signal):
         """Infer latent state of neighbors based on our observations which already contain neighbor actions."""
@@ -282,14 +302,24 @@ class FURTHERPlusAgent:
         # Convert reward to tensor
         reward_tensor = torch.tensor([[reward]], dtype=torch.float32).to(self.device).squeeze(1)
 
-        # Get latent distribution and opponent belief distribution
-        mean, logvar, opponent_belief_distribution = self.encoder(
-            signal,
-            neighbor_actions,
-            reward_tensor,
-            next_signal,
-            self.current_latent
-        )
+        if self.use_gnn:
+            # Use the GNN for inference
+            mean, logvar, opponent_belief_distribution = self.inference_module(
+                signal,
+                neighbor_actions,
+                reward_tensor,
+                next_signal,
+                self.current_latent
+            )
+        else:
+            # Use the traditional encoder
+            mean, logvar, opponent_belief_distribution = self.encoder(
+                signal,
+                neighbor_actions,
+                reward_tensor,
+                next_signal,
+                self.current_latent
+            )
         
         # Sample based on reparameterized distribution 
         # Ref: https://github.com/kampta/pytorch-distributions/blob/master/gaussian_vae.py
@@ -363,7 +393,7 @@ class FURTHERPlusAgent:
             # Unpack the batch
             (signals, neighbor_actions, beliefs, latents, actions, rewards, next_signals, next_beliefs, next_latents, means, logvars) = batch
             
-            # Update encoder-decoder (inference module)
+            # Update inference module
             inference_loss = self._update_inference(
                 signals,
                 neighbor_actions, 
@@ -416,21 +446,57 @@ class FURTHERPlusAgent:
     
     def _update_inference(self, signals, neighbor_actions, next_signals, next_latents, means, logvars):
         """Update inference module with FURTHER-style temporal KL."""
-        # Generate fresh neighbor action logits for the batch
-        # Use the decoder directly on the batch
-        batch_neighbor_logits = self.decoder(signals, next_latents)
         
-        # Reshape if needed for cross entropy
-        if batch_neighbor_logits.dim() == 3:
-            batch_size, seq_len, action_dim = batch_neighbor_logits.shape
-            batch_neighbor_logits = batch_neighbor_logits.view(batch_size * seq_len, action_dim)
-            neighbor_actions = neighbor_actions.view(-1)
+        if self.use_gnn:
+            # For GNN inference module
+            # We need dummy rewards for the GNN forward pass
+            batch_size = signals.size(0)
+            dummy_rewards = torch.zeros(batch_size, 1, device=self.device)
+            
+            # Forward pass through GNN to get new distribution parameters
+            # Note: we detach next_latents to avoid gradients flowing back through the target network
+            new_means, new_logvars, _ = self.inference_module(
+                signals, 
+                neighbor_actions, 
+                dummy_rewards, 
+                next_signals
+            )
+            
+            # Generate action predictions using the current batch
+            batch_neighbor_logits = self.inference_module.predict_actions(signals, next_latents.detach())
+            
+            # Reshape batch_neighbor_logits if needed for cross entropy
+            if batch_neighbor_logits.dim() == 3:
+                batch_size, seq_len, action_dim = batch_neighbor_logits.shape
+                batch_neighbor_logits = batch_neighbor_logits.view(batch_size * seq_len, action_dim)
+                neighbor_actions_reshaped = neighbor_actions.view(-1)
+            else:
+                neighbor_actions_reshaped = neighbor_actions
+                
+            # Calculate reconstruction loss
+            recon_loss = F.cross_entropy(batch_neighbor_logits, neighbor_actions_reshaped)
+            
+            # Calculate temporal KL divergence with numerical stability
+            kl_loss = self._calculate_temporal_kl_divergence(new_means, new_logvars)
+        else:
+            # For traditional encoder-decoder
+            # Generate fresh neighbor action logits for the batch
+            # Use the decoder directly on the batch
+            batch_neighbor_logits = self.decoder(signals, next_latents)
         
-        # Calculate reconstruction loss
-        recon_loss = F.cross_entropy(batch_neighbor_logits, neighbor_actions)
-        
-        # Calculate temporal KL divergence (FURTHER-style)
-        kl_loss = self._calculate_temporal_kl_divergence(means, logvars)
+            # Reshape if needed for cross entropy
+            if batch_neighbor_logits.dim() == 3:
+                batch_size, seq_len, action_dim = batch_neighbor_logits.shape
+                batch_neighbor_logits = batch_neighbor_logits.view(batch_size * seq_len, action_dim)
+                neighbor_actions_reshaped = neighbor_actions.view(-1)
+            else:
+                neighbor_actions_reshaped = neighbor_actions
+            
+            # Calculate reconstruction loss
+            recon_loss = F.cross_entropy(batch_neighbor_logits, neighbor_actions_reshaped)
+            
+            # Calculate temporal KL divergence (FURTHER-style)
+            kl_loss = self._calculate_temporal_kl_divergence(means, logvars)
         
         # Total loss
         inference_loss = recon_loss + kl_loss
@@ -438,10 +504,18 @@ class FURTHERPlusAgent:
         # Update networks
         self.inference_optimizer.zero_grad()
         inference_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            list(self.encoder.parameters()) + list(self.decoder.parameters()), 
-            max_norm=1.0
-        )
+        
+        if self.use_gnn:
+            torch.nn.utils.clip_grad_norm_(
+                self.inference_module.parameters(), 
+                max_norm=1.0
+            )
+        else:
+            torch.nn.utils.clip_grad_norm_(
+                list(self.encoder.parameters()) + list(self.decoder.parameters()), 
+                max_norm=1.0
+            )
+            
         self.inference_optimizer.step()
         
         return inference_loss.item()
@@ -610,18 +684,26 @@ class FURTHERPlusAgent:
             )
     
     def save(self, path):
-        """Save agent model."""
-        torch.save({
+        """Save the agent's networks to a file."""
+        checkpoint = {
             'belief_processor': self.belief_processor.state_dict(),
-            'encoder': self.encoder.state_dict(),
-            'decoder': self.decoder.state_dict(),
             'policy': self.policy.state_dict(),
             'q_network1': self.q_network1.state_dict(),
             'q_network2': self.q_network2.state_dict(),
             'target_q_network1': self.target_q_network1.state_dict(),
             'target_q_network2': self.target_q_network2.state_dict(),
-            'gain_parameter': self.gain_parameter.data,
-        }, path)
+            'gain_parameter': self.gain_parameter,
+            'use_gnn': self.use_gnn
+        }
+        
+        # Save the appropriate inference module
+        if self.use_gnn:
+            checkpoint['inference_module'] = self.inference_module.state_dict()
+        else:
+            checkpoint['encoder'] = self.encoder.state_dict()
+            checkpoint['decoder'] = self.decoder.state_dict()
+        
+        torch.save(checkpoint, path)
     
     def load(self, path, evaluation_mode=False):
         """
@@ -649,8 +731,11 @@ class FURTHERPlusAgent:
             
         # Load other components that should be compatible
         try:
-            self.encoder.load_state_dict(checkpoint['encoder'])
-            self.decoder.load_state_dict(checkpoint['decoder'])
+            if self.use_gnn:
+                self.inference_module.load_state_dict(checkpoint['inference_module'])
+            else:
+                self.encoder.load_state_dict(checkpoint['encoder'])
+                self.decoder.load_state_dict(checkpoint['decoder'])
             self.policy.load_state_dict(checkpoint['policy'])
         except RuntimeError as e:
             print(f"Warning: Could not load some components: {e}")
