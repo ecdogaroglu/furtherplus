@@ -3,12 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from modules.networks import EncoderNetwork, DecoderNetwork, PolicyNetwork, QNetwork, GRUBeliefProcessor
+from modules.networks import EncoderNetwork, DecoderNetwork, PolicyNetwork, QNetwork, TransformerBeliefProcessor
 from modules.replay_buffer import ReplayBuffer
 from modules.utils import get_best_device, encode_observation
 
 class FURTHERPlusAgent:
-    """FURTHER+ agent for social learning with additional advantage-based GRU training."""
+    """FURTHER+ agent for social learning with additional advantage-based Transformer training."""
     def __init__(
         self,
         agent_id,
@@ -61,11 +61,14 @@ class FURTHERPlusAgent:
         )
         
         # Initialize all networks
-        self.belief_processor = GRUBeliefProcessor(
+        self.belief_processor = TransformerBeliefProcessor(
             hidden_dim=belief_dim,
             action_dim=action_dim,
             device=device,
-            num_belief_states=num_states  
+            num_belief_states=num_states,
+            nhead=4,  # Number of attention heads
+            num_layers=2,  # Number of transformer layers
+            dropout=0.1  # Dropout rate
         ).to(device)
         
         self.encoder = EncoderNetwork(
@@ -144,10 +147,10 @@ class FURTHERPlusAgent:
             lr=learning_rate
         )
         
-        # Separate GRU optimizer - only for belief processor
-        self.gru_optimizer = torch.optim.Adam(
+        # Separate Transformer optimizer - only for belief processor
+        self.transformer_optimizer = torch.optim.Adam(
             self.belief_processor.parameters(),
-            lr=learning_rate   # Slower learning rate for stability
+            lr=learning_rate
         )
         
         self.q_optimizer = torch.optim.Adam(
@@ -248,10 +251,8 @@ class FURTHERPlusAgent:
         if hasattr(self, 'current_opponent_belief_distribution') and self.current_opponent_belief_distribution is not None:
             self.current_opponent_belief_distribution = self.current_opponent_belief_distribution.detach()
         
-        # Also reset any cached states in the GRU
-        for name, param in self.belief_processor.gru.named_parameters():
-            if 'bias_hh' in name:  # Reset the bias related to hidden state
-                nn.init.constant_(param, 0)
+        # No need to reset specific parameters for the transformer
+        # as it doesn't maintain hidden state like GRU does
     
     def infer_latent(self, signal, neighbor_actions, reward, next_signal):
         """Infer latent state of neighbors based on our observations which already contain neighbor actions."""
@@ -328,7 +329,7 @@ class FURTHERPlusAgent:
         total_inference_loss = 0
         total_critic_loss = 0
         total_policy_loss = 0
-        total_gru_loss = 0
+        total_transformer_loss = 0
         
         # Check if we have a single batch or a list of sequences
         if isinstance(batch_sequences, tuple):
@@ -356,13 +357,13 @@ class FURTHERPlusAgent:
             policy_loss, _ = policy_result
             total_policy_loss += policy_loss
             
-            # Update GRU with advantage
-            gru_loss = self._update_gru(
+            # Update Transformer with advantage
+            transformer_loss = self._update_transformer(
                 signals, 
                 neighbor_actions, 
                 beliefs,
                 next_signals)
-            total_gru_loss += gru_loss
+            total_transformer_loss += transformer_loss
             
             # Update Q-networks
             critic_loss = self._update_critics(
@@ -388,7 +389,7 @@ class FURTHERPlusAgent:
             'inference_loss': total_inference_loss / sequence_length,
             'critic_loss': total_critic_loss / sequence_length,
             'policy_loss': total_policy_loss / sequence_length,
-            'gru_loss': total_gru_loss / sequence_length
+            'transformer_loss': total_transformer_loss / sequence_length
         }
     
     def _update_inference(self, signals, neighbor_actions, next_signals, next_latents, means, logvars):
@@ -496,7 +497,7 @@ class FURTHERPlusAgent:
         return q_loss.item()
     
     def _update_policy(self, beliefs, latents, actions, neighbor_actions):
-        """Update policy network and calculate advantage for GRU training.
+        """Update policy network and calculate advantage for Transformer training.
         
         Returns:
             Tuple of (policy_loss_value, advantage)
@@ -523,7 +524,7 @@ class FURTHERPlusAgent:
         # Policy loss is negative of expected Q-value plus entropy
         policy_loss = -(expected_q + self.entropy_weight * entropy).mean()
         
-        # Calculate advantage for GRU training
+        # Calculate advantage for Transformer training
         # Advantage is Q-value of taken action minus expected Q-value (baseline)
         q_actions = q.gather(1, actions.unsqueeze(1))
         advantage = q_actions - expected_q.detach()
@@ -536,10 +537,10 @@ class FURTHERPlusAgent:
         
         return policy_loss.item(), advantage
     
-    def _update_gru(self, signals, neighbor_actions, beliefs, 
+    def _update_transformer(self, signals, neighbor_actions, beliefs, 
                 next_signals):
         """
-        Update belief processor (GRU) by optimizing for next state prediction.
+        Update belief processor (Transformer) by optimizing for next state prediction.
         
         Args:
             signals: Current signals/observations
@@ -552,7 +553,7 @@ class FURTHERPlusAgent:
         Returns:
             float: Loss value
         """
-        # Process current signals and neighbor actions through GRU to get next belief
+        # Process current signals and neighbor actions through Transformer to get next belief
         _, belief_distributions = self.belief_processor(
             signals, neighbor_actions, beliefs
         )
@@ -560,17 +561,17 @@ class FURTHERPlusAgent:
         # The belief distribution should predict the next observation (signal)
         # Log likelihood of next signal given current belief
         # Use belief distribution as prediction of next signal
-        gru_loss = F.binary_cross_entropy(
+        transformer_loss = F.binary_cross_entropy(
             belief_distributions, next_signals, reduction='none'
         ).sum(dim=1).mean()
                 
-        # Update GRU parameters
-        self.gru_optimizer.zero_grad()
-        gru_loss.backward()
+        # Update Transformer parameters
+        self.transformer_optimizer.zero_grad()
+        transformer_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.belief_processor.parameters(), max_norm=1.0)
-        self.gru_optimizer.step()
+        self.transformer_optimizer.step()
         
-        return gru_loss.item()
+        return transformer_loss.item()
     
     def _update_targets(self):
         """Update target networks."""

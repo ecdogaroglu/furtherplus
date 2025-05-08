@@ -3,32 +3,49 @@ import torch.nn as nn
 import torch.nn.functional as F
 from modules.utils import get_best_device
 
-class GRUBeliefProcessor(nn.Module):
-    """GRU-based belief state processor for FURTHER+."""
-    def __init__(self, hidden_dim, action_dim, device=None, num_belief_states=None):
-        # Use the best available device if none is specified
-
-        super(GRUBeliefProcessor, self).__init__()
+class TransformerBeliefProcessor(nn.Module):
+    """Transformer-based belief state processor for FURTHER+."""
+    def __init__(self, hidden_dim, action_dim, device=None, num_belief_states=None, 
+                 nhead=4, num_layers=2, dropout=0.1):
+        super(TransformerBeliefProcessor, self).__init__()
         self.device = device
         self.hidden_dim = hidden_dim
         self.input_dim = action_dim + num_belief_states  # Fixed input dimension calculation
         self.action_dim = action_dim
         self.num_belief_states = num_belief_states
+        self.nhead = nhead
+        self.num_layers = num_layers
         
-        # GRU for processing observation history
-        self.gru = nn.GRU(self.input_dim, hidden_dim, batch_first=True)
+        # Input projection to match hidden dimension
+        self.input_projection = nn.Linear(self.input_dim, hidden_dim)
         
-        # Initialize parameters
-        for name, param in self.gru.named_parameters():
-            if 'weight' in name:
-                nn.init.xavier_normal_(param)
-            elif 'bias' in name:
-                nn.init.constant_(param, 0)
+        # Positional encoding for transformer
+        self.pos_encoder = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        
+        # Transformer encoder layer
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=nhead,
+            dim_feedforward=hidden_dim * 4,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        # Transformer encoder
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer=encoder_layer,
+            num_layers=num_layers
+        )
         
         # Add softmax head for belief distribution
         self.belief_head = nn.Linear(hidden_dim, num_belief_states)
+        
+        # Initialize parameters
+        nn.init.xavier_normal_(self.input_projection.weight)
+        nn.init.constant_(self.input_projection.bias, 0)
         nn.init.xavier_normal_(self.belief_head.weight)
         nn.init.constant_(self.belief_head.bias, 0)
+        nn.init.normal_(self.pos_encoder, mean=0.0, std=0.02)
 
     def standardize_belief_state(self, belief):
         """Ensure belief state has consistent shape [1, batch_size, hidden_dim]."""
@@ -75,11 +92,29 @@ class GRUBeliefProcessor(nn.Module):
             
         # Combine inputs along feature dimension
         combined = torch.cat([signal, neighbor_actions], dim=1)
-        # Add sequence dimension (GRU expects [batch, seq_len, features])
+        # Add sequence dimension (Transformer expects [batch, seq_len, features])
         combined = combined.unsqueeze(1).to(self.device)  # [batch_size, 1, input_dim]
         
-        # Process through GRU
-        _, new_belief = self.gru(combined, current_belief)
+        # Project input to hidden dimension
+        projected = self.input_projection(combined)
+        
+        # Add positional encoding
+        projected = projected + self.pos_encoder
+        
+        # If we have a current belief, we can use it as context
+        if current_belief is not None:
+            # Reshape current_belief to [batch_size, 1, hidden_dim]
+            context = current_belief.transpose(0, 1)
+            # Concatenate with projected input to form sequence
+            sequence = torch.cat([context, projected], dim=1)
+        else:
+            sequence = projected
+            
+        # Process through transformer
+        transformer_output = self.transformer_encoder(sequence)
+        
+        # Take the last token's output as the new belief state
+        new_belief = transformer_output[:, -1:, :].transpose(0, 1)
         
         # Calculate belief distribution
         logits = self.belief_head(new_belief.squeeze(0))
