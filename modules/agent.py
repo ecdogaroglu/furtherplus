@@ -7,8 +7,8 @@ from modules.networks import EncoderNetwork, DecoderNetwork, PolicyNetwork, QNet
 from modules.replay_buffer import ReplayBuffer
 from modules.utils import get_best_device, encode_observation
 
-class FURTHERPlusAgent:
-    """FURTHER+ agent for social learning with additional advantage-based Transformer training."""
+class POLARISAgent:
+    """POLARIS agent for social learning with additional advantage-based Transformer training."""
     def __init__(
         self,
         agent_id,

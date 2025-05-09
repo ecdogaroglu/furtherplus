@@ -1,5 +1,5 @@
 """
-Visualization functions for FURTHER+ experiments.
+Visualization functions for POLARIS experiments.
 """
 
 import matplotlib.pyplot as plt

@@ -1,4 +1,4 @@
-# FURTHER+ Social Learning Framework
+# POLARIS Social Learning Framework
 
 A modular deep reinforcement learning framework for multi-agent social learning and coordination, extending the [FURTHER](https://github.com/dkkim93/further) framework by Dong-Ki Kim et al.
 
@@ -7,10 +7,9 @@ A modular deep reinforcement learning framework for multi-agent social learning 
 
 ## Overview
 
-FURTHER+ (FUlly Reinforcing acTive influence witH averagE
-Reward Plus) is a framework designed to study how agents learn from each other in social networks. It implements a multi-agent reinforcement learning environment where agents must coordinate their actions based on partial observations and neighbor interactions within configurable network topologies.
+POLARIS (Partially Observable Learning with Active Reinforcement In Social environments) is a framework designed to study how agents learn from each other in social networks. It implements a multi-agent reinforcement learning environment where agents must coordinate their actions based on partial observations and neighbor interactions within configurable network topologies.
 
-This framework extends the original [FURTHER](https://arxiv.org/pdf/2203.03535.pdf) framework (Kim et al., NeurIPS 2022) with enhanced capabilities specifically for social learning scenarios. While the original FURTHER focused on influencing long-term behavior in multiagent reinforcement learning, FURTHER+ adds specialized components for belief modeling, information propagation through networks, and advantage-weighted GRU training.
+This framework extends the original [FURTHER](https://arxiv.org/pdf/2203.03535.pdf) framework (Kim et al., NeurIPS 2022) with enhanced capabilities specifically for social learning scenarios. While the original FURTHER focused on influencing long-term behavior in multiagent reinforcement learning, POLARIS adds specialized components for belief modeling, information propagation through networks, and advantage-weighted training.
 
 The framework enables researchers to investigate emergent social learning phenomena, information diffusion dynamics, and collective intelligence in artificial agent networks.
 
@@ -19,21 +18,47 @@ The framework enables researchers to investigate emergent social learning phenom
 - **Modular Architecture**: Clean separation of environment, agent models, and simulation logic
 - **Customizable Network Topologies**: Experiment with complete, ring, star, or random network structures
 - **Sophisticated Agent Architecture**:
-  - GRU-based belief processor for tracking agent internal state
+  - Transformer-based belief processor for tracking agent internal state
   - Latent variable model for inferring other agents' states
   - Advantage-weighted belief learning mechanism
+  - Graph Neural Network option for network-aware representations
+- **Neural Architecture Options**:
+  - Transformer-based belief processing
+  - Graph Neural Networks with temporal attention
+  - Traditional encoder-decoder architectures
 - **Comprehensive Analysis Tools**:
   - Real-time learning rate estimation
   - Belief and latent state visualization
   - Theoretical bounds comparison
   - Publication-quality plots
 
+## Neural Architecture
+
+POLARIS offers multiple neural architectures that can be selected based on research needs:
+
+### Transformer-Based Belief Processor
+
+The default belief processor uses a Transformer architecture with self-attention to better capture temporal dependencies in observed signals and neighbor actions. Key advantages include:
+
+- Better handling of long-range dependencies in observation sequences
+- Improved information extraction from neighbor behaviors
+- Superior performance in complex social learning scenarios
+
+### Graph Neural Networks with Temporal Attention
+
+For network-aware representations, POLARIS implements a Graph Neural Network with temporal attention that can be enabled with `--use-gnn`:
+
+- Represents agents and their interactions as nodes and edges in a graph
+- Maintains a temporal memory of past states and applies attention
+- Adapts to different network topologies automatically
+- Configurable with `--gnn-layers`, `--attn-heads`, and `--temporal-window`
+
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/ecdogaroglu/furtherplus.git
-cd furtherplus
+git clone https://github.com/ecdogaroglu/polaris.git
+cd polaris
 
 # Install dependencies
 pip install -r requirements.txt
@@ -57,7 +82,7 @@ python experiment.py --eval-only --load-model --num-agents 4 --horizon 500
 
 ### Training Configuration
 
-FURTHER+ offers extensive customization for training agents:
+POLARIS offers extensive customization for training agents:
 
 ```bash
 python experiment.py \
@@ -77,6 +102,10 @@ python experiment.py \
   --batch-size 64 \
   --buffer-capacity 5000 \
   --update-interval 1 \
+  --use-gnn \
+  --gnn-layers 2 \
+  --attn-heads 4 \
+  --temporal-window 5 \
   --exp-name "custom_experiment" \
   --save-model
 ```
@@ -126,12 +155,17 @@ python experiment.py --eval-only --load-model --latex-style --use-tex
 | `--discount-factor` | Discount factor (0 = average reward) | 0.9 |
 | `--entropy-weight` | Entropy bonus weight | 0.5 |
 | `--kl-weight` | KL weight for inference | 10 |
+| `--use-gnn` | Use Graph Neural Network with temporal attention | False |
+| `--gnn-layers` | Number of GNN layers | 2 |
+| `--attn-heads` | Number of attention heads in GNN | 4 |
+| `--temporal-window` | Temporal window size for GNN memory | 5 |
 | `--seed` | Random seed | 42 |
 | `--output-dir` | Output directory | results |
 | `--exp-name` | Experiment name | brandl_validation |
 | `--save-model` | Save agent models | False |
 | `--load-model` | Load model | None |
 | `--eval-only` | Run evaluation only | False |
+| `--train-then-evaluate` | Train for 4 episodes with horizon 1000, then evaluate | False |
 | `--plot-internal-states` | Enable internal state visualizations | False |
 | `--plot-type` | Visualization type (belief, latent, both) | both |
 | `--latex-style` | Use LaTeX-style formatting for plots | False |
@@ -139,7 +173,7 @@ python experiment.py --eval-only --load-model --latex-style --use-tex
 
 ## Advanced Analysis
 
-FURTHER+ enables sophisticated analysis of multi-agent learning dynamics:
+POLARIS enables sophisticated analysis of multi-agent learning dynamics:
 
 - **Learning Rate Estimation**: Automatically calculates exponential learning rates for each agent
 - **Theoretical Bounds Comparison**: Compares agent performance against theoretical bounds from [Brandl (2024)]
@@ -149,11 +183,11 @@ FURTHER+ enables sophisticated analysis of multi-agent learning dynamics:
 ## Project Structure
 
 ```
-furtherplus/
+polaris/
 ├── experiment.py          # Main experiment script
 ├── modules/
 │   ├── __init__.py        # Package initialization
-│   ├── agent.py           # FURTHER+ agent implementation
+│   ├── agent.py           # POLARIS agent implementation
 │   ├── args.py            # Command line argument parsing
 │   ├── environment.py     # Social learning environment
 │   ├── metrics.py         # Evaluation metrics collection
@@ -176,19 +210,20 @@ furtherplus/
 - NetworkX
 - scikit-learn
 - tqdm
+- torch-geometric (for GNN functionality)
 
 ## Citation
 
-If you use FURTHER+ in your research, please cite:
+If you use POLARIS in your research, please cite:
 
 ```bibtex
-@misc{dogaroglu2025furtherplus,
+@misc{dogaroglu2025polaris,
   author = {Dogaroglu, Ege Can},
-  title = {FURTHER+: A Framework for Multi-Agent Social Learning},
+  title = {POLARIS: Partially Observable Learning with Active Reinforcement In Social environments},
   year = {2025},
   publisher = {GitHub},
   journal = {GitHub repository},
-  howpublished = {\url{https://github.com/ecdogaroglu/furtherplus}}
+  howpublished = {\url{https://github.com/ecdogaroglu/polaris}}
 }
 ```
 

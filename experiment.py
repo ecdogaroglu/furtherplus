@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-FURTHER+ Social Learning Experiment Script (Modular Version)
+POLARIS Social Learning Experiment Script (Modular Version)
 
-This script runs experiments with FURTHER+ agents in a social learning environment.
+This script runs experiments with POLARIS agents in a social learning environment.
 It has been refactored into a modular structure for better organization and maintainability.
 """
 

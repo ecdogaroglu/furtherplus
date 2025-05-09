@@ -1,5 +1,5 @@
 """
-Core simulation logic for FURTHER+ experiments.
+Core simulation logic for POLARIS experiments.
 """
 
 import numpy as np
@@ -33,13 +33,13 @@ from modules.metrics import (
     save_metrics_to_file
 )
 from modules.plotting import generate_plots
-from modules.agent import FURTHERPlusAgent
+from modules.agent import POLARISAgent
 from modules.networks import TemporalGNN
 from modules.replay_buffer import ReplayBuffer
 
 def run_agents(env, args, training=True, model_path=None):
     """
-    Run FURTHER+ agents in the social learning environment.
+    Run POLARIS agents in the social learning environment.
     
     Args:
         env: The social learning environment
@@ -296,7 +296,7 @@ def update_agent_states(agents, observations, next_observations, actions, reward
                 agent.update(batch)
 
 def initialize_agents(env, args, obs_dim):
-    """Initialize FURTHER+ agents."""
+    """Initialize POLARIS agents."""
     print(f"Initializing {env.num_agents} agents{'...' if args.eval_only else ' for evaluation...'}")
     
     # Log if using GNN
@@ -308,7 +308,7 @@ def initialize_agents(env, args, obs_dim):
     agents = {}
     
     for agent_id in range(env.num_agents):
-        agent = FURTHERPlusAgent(
+        agent = POLARISAgent(
             agent_id=agent_id,
             num_agents=env.num_agents,
             num_states=env.num_states,

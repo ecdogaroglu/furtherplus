@@ -1,5 +1,5 @@
 """
-Metrics collection and processing for FURTHER+ experiments.
+Metrics collection and processing for POLARIS experiments.
 """
 
 import json

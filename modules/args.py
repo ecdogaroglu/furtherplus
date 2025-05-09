@@ -1,5 +1,5 @@
 """
-Command-line argument parsing for FURTHER+ experiments.
+Command-line argument parsing for POLARIS experiments.
 """
 
 import argparse
@@ -8,7 +8,7 @@ from modules.utils import get_best_device
 
 def parse_args():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Train and evaluate FURTHER+ in social learning")
+    parser = argparse.ArgumentParser(description="Train and evaluate POLARIS in social learning")
     
     # Environment parameters
     parser.add_argument('--num-agents', type=int, default=2, help='Number of agents')

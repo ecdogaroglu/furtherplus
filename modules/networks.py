@@ -8,7 +8,7 @@ import torch_geometric
 from torch_geometric.nn import GCNConv, GATConv
 
 class TransformerBeliefProcessor(nn.Module):
-    """Transformer-based belief state processor for FURTHER+."""
+    """Transformer-based belief state processor for POLARIS."""
     def __init__(self, hidden_dim, action_dim, device=None, num_belief_states=None, 
                  nhead=4, num_layers=2, dropout=0.1):
         super(TransformerBeliefProcessor, self).__init__()
