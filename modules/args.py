@@ -66,7 +66,8 @@ def parse_args():
     # Training vs evaluation
     parser.add_argument('--eval-only', action='store_true', 
                         help='Only run evaluation, no training')
-    
+    parser.add_argument('--train-then-evaluate', action='store_true', 
+                        help='Train for 4 episodes with horizon 1000, then evaluate for 4 episodes with horizon 1000')
     # Visualization options
     parser.add_argument('--plot-internal-states', action='store_true',
                         help='Generate detailed visualizations of internal states (belief, latent, decision boundaries)')

@@ -24,8 +24,31 @@ def main():
     # Set initial random seeds
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    
-    # Create environment
+
+    if args.train_then_evaluate:
+
+        # Train
+        args.num_episodes = 4
+        args.horizon = 1000
+        args.eval_only = False
+        args.save_model = True
+        args.use_gnn = True
+        run_experiment(args)
+
+        # Evaluate
+        args.num_episodes = 4
+        args.horizon = 1000
+        args.eval_only = True
+        args.load_model = 'auto'
+        run_experiment(args)
+
+    else:
+        run_experiment(args)
+
+
+def run_experiment(args):
+    """Run the experiment with the given arguments."""
+        # Create environment
     env = SocialLearningEnvironment(
         num_agents=args.num_agents,
         signal_accuracy=args.signal_accuracy,
@@ -57,7 +80,6 @@ def main():
         run_agents(env, args, training=False, model_path=model_path)
     else:
         run_agents(env, args, training=True, model_path=model_path)
-
 
 if __name__ == "__main__":
     main()
