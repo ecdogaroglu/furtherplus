@@ -6,6 +6,7 @@ import numpy as np
 from modules.networks import EncoderNetwork, DecoderNetwork, PolicyNetwork, QNetwork, TransformerBeliefProcessor, TemporalGNN
 from modules.replay_buffer import ReplayBuffer
 from modules.utils import get_best_device, encode_observation
+from modules.ewc import EWCLoss, calculate_fisher_from_replay_buffer
 
 class POLARISAgent:
     """POLARIS agent for social learning with additional advantage-based Transformer training."""
@@ -27,7 +28,10 @@ class POLARISAgent:
         device=None,
         buffer_capacity=1000,
         max_trajectory_length=50,
-        use_gnn=True
+        use_gnn=True,
+        use_ewc=False,
+        ewc_importance=1000.0,
+        ewc_online=False
     ):
         
         # Use the best available device if none is specified
@@ -209,6 +213,31 @@ class POLARISAgent:
         
         # Episode tracking
         self.episode_step = 0
+        
+        # EWC setup
+        self.use_ewc = use_ewc
+        self.ewc_importance = ewc_importance
+        self.ewc_online = ewc_online
+        
+        if self.use_ewc:
+            # Initialize EWC for belief processor and policy networks
+            self.belief_ewc = EWCLoss(
+                model=self.belief_processor,
+                importance=ewc_importance,
+                online=ewc_online,
+                device=device
+            )
+            
+            self.policy_ewc = EWCLoss(
+                model=self.policy,
+                importance=ewc_importance,
+                online=ewc_online,
+                device=device
+            )
+            
+            # Track previously seen true states
+            self.seen_true_states = set()
+            self.fisher_calculated = False
     
     def observe(self, signal, neighbor_actions):
         """Update belief state based on new observation."""
@@ -620,6 +649,11 @@ class POLARISAgent:
         # Policy loss is negative of expected Q-value plus entropy
         policy_loss = -(expected_q + self.entropy_weight * entropy).mean()
         
+        # Add EWC loss if enabled
+        if self.use_ewc and self.fisher_calculated:
+            ewc_loss = self.policy_ewc.calculate_loss()
+            policy_loss += ewc_loss
+        
         # Calculate advantage for Transformer training
         # Advantage is Q-value of taken action minus expected Q-value (baseline)
         q_actions = q.gather(1, actions.unsqueeze(1))
@@ -660,6 +694,12 @@ class POLARISAgent:
         transformer_loss = F.binary_cross_entropy(
             belief_distributions, next_signals, reduction='none'
         ).sum(dim=1).mean()
+        
+        # Add EWC loss if enabled
+        ewc_loss = 0.0
+        if self.use_ewc and self.fisher_calculated:
+            ewc_loss = self.belief_ewc.calculate_loss()
+            transformer_loss += ewc_loss
                 
         # Update Transformer parameters
         self.transformer_optimizer.zero_grad()
@@ -845,6 +885,75 @@ class POLARISAgent:
             opponent_belief_distribution: Current opponent belief distribution tensor or None if not available
         """
         return self.current_opponent_belief_distribution if hasattr(self, 'current_opponent_belief_distribution') else None
+        
+    def calculate_fisher_matrices(self, replay_buffer):
+        """
+        Calculate Fisher information matrices for belief processor and policy networks
+        using data from the replay buffer.
+        
+        Args:
+            replay_buffer: The replay buffer containing transitions
+        """
+        if not self.use_ewc or replay_buffer is None or len(replay_buffer) < 64:
+            return
+        
+        # Define loss functions for Fisher calculation
+        def belief_loss_fn(model, batch):
+            signals, neighbor_actions, beliefs, _, _, _, next_signals, _, _, _, _ = batch
+            
+            # Ensure all tensors are on the correct device and have gradients
+            signals = signals.to(self.device)
+            neighbor_actions = neighbor_actions.to(self.device)
+            beliefs = beliefs.to(self.device)
+            next_signals = next_signals.to(self.device)
+            
+            # Forward pass
+            _, belief_distributions = model(signals, neighbor_actions, beliefs)
+            
+            # Calculate loss
+            loss = F.binary_cross_entropy(belief_distributions, next_signals, reduction='mean')
+            return loss
+        
+        def policy_loss_fn(model, batch):
+            _, _, beliefs, latents, actions, _, _, _, _, _, _ = batch
+            
+            # Ensure all tensors are on the correct device and have gradients
+            beliefs = beliefs.to(self.device)
+            latents = latents.to(self.device)
+            actions = actions.to(self.device)
+            
+            # Forward pass
+            action_logits = model(beliefs, latents)
+            
+            # Calculate loss
+            loss = F.cross_entropy(action_logits, actions)
+            return loss
+        
+        # Calculate Fisher matrices
+        belief_fisher = calculate_fisher_from_replay_buffer(
+            model=self.belief_processor,
+            replay_buffer=replay_buffer,
+            loss_fn=belief_loss_fn,
+            device=self.device,
+            batch_size=64,
+            num_batches=10
+        )
+        
+        policy_fisher = calculate_fisher_from_replay_buffer(
+            model=self.policy,
+            replay_buffer=replay_buffer,
+            loss_fn=policy_loss_fn,
+            device=self.device,
+            batch_size=64,
+            num_batches=10
+        )
+        
+        # Register tasks with EWC
+        self.belief_ewc.register_task(belief_fisher)
+        self.policy_ewc.register_task(policy_fisher)
+        
+        self.fisher_calculated = True
+        print(f"Agent {self.agent_id}: Fisher matrices calculated and registered with EWC")
         
     def end_episode(self):
         """

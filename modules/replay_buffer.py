@@ -50,6 +50,21 @@ class ReplayBuffer:
                 sequences.append(sequence)
                 
             return self._process_sequence_batch(sequences)
+        elif mode == "all":
+            # Sample all available transitions (up to batch_size)
+            if len(self.buffer) == 0:
+                return None
+            
+            # Take all transitions (or up to batch_size if specified)
+            num_samples = min(len(self.buffer), batch_size) if batch_size > 0 else len(self.buffer)
+            # Use sequential sampling if few samples available
+            if num_samples <= 5:  # For very small buffers, take them in order
+                indices = range(num_samples)
+            else:
+                indices = np.random.choice(len(self.buffer), num_samples, replace=False)
+            
+            transitions = [self.buffer[i] for i in indices]
+            return self._process_transitions(transitions)
         else:
             # Sample individual transitions
             if len(self.buffer) < batch_size:
@@ -89,66 +104,127 @@ class ReplayBuffer:
         next_signals, next_beliefs, next_latents, means, logvars = zip(*transitions)
         
         # For tensors that are already torch tensors, we need to detach them
-        signals_list = [s.detach() for s in signals]
-        neighbor_actions_list = [na.detach() if isinstance(na, torch.Tensor) else na for na in neighbor_actions]
+        signals_list = []
+        for s in signals:
+            if isinstance(s, torch.Tensor):
+                signals_list.append(s.detach())
+            elif isinstance(s, (int, float)):
+                signals_list.append(torch.tensor([s], dtype=torch.float32))
+            else:
+                signals_list.append(s)
+        
+        neighbor_actions_list = []
+        for na in neighbor_actions:
+            if isinstance(na, torch.Tensor):
+                neighbor_actions_list.append(na.detach())
+            elif isinstance(na, (int, float)):
+                neighbor_actions_list.append(torch.tensor([na], dtype=torch.float32))
+            else:
+                neighbor_actions_list.append(na)
         
         # Process belief states to ensure consistent shape [1, batch_size, hidden_dim]
         beliefs_list = []
         next_beliefs_list = []
         for b, nb in zip(beliefs, next_beliefs):
             # Handle current belief
-            b = self._standardize_belief_state(b.detach())
-            beliefs_list.append(b)
+            if isinstance(b, torch.Tensor):
+                b = self._standardize_belief_state(b.detach())
+                beliefs_list.append(b)
+            else:
+                beliefs_list.append(torch.zeros(1, 1, self.belief_dim, device=self.device))
             
             # Handle next belief
-            nb = self._standardize_belief_state(nb.detach())
-            next_beliefs_list.append(nb)
+            if isinstance(nb, torch.Tensor):
+                nb = self._standardize_belief_state(nb.detach())
+                next_beliefs_list.append(nb)
+            else:
+                next_beliefs_list.append(torch.zeros(1, 1, self.belief_dim, device=self.device))
         
         # Process latent states to ensure consistent shape [1, batch_size, latent_dim]
         latents_list = []
         next_latents_list = []
         for l, nl in zip(latents, next_latents):
             # Handle current latent
-            if l.dim() == 1:  # [latent_dim]
-                l = l.unsqueeze(0)  # [1, latent_dim]
-            if l.dim() == 2:  # [batch_size, latent_dim]
-                l = l.unsqueeze(0)  # [1, batch_size, latent_dim]
-            latents_list.append(l.detach())
+            if isinstance(l, torch.Tensor):
+                if l.dim() == 1:  # [latent_dim]
+                    l = l.unsqueeze(0)  # [1, latent_dim]
+                if l.dim() == 2:  # [batch_size, latent_dim]
+                    l = l.unsqueeze(0)  # [1, batch_size, latent_dim]
+                latents_list.append(l.detach())
+            else:
+                # Create zero tensor if not a tensor
+                latents_list.append(torch.zeros(1, 1, self.belief_dim, device=self.device))
             
             # Handle next latent
-            if nl.dim() == 1:  # [latent_dim]
-                nl = nl.unsqueeze(0)  # [1, latent_dim]
-            if nl.dim() == 2:  # [batch_size, latent_dim]
-                nl = nl.unsqueeze(0)  # [1, batch_size, latent_dim]
-            next_latents_list.append(nl.detach())
+            if isinstance(nl, torch.Tensor):
+                if nl.dim() == 1:  # [latent_dim]
+                    nl = nl.unsqueeze(0)  # [1, latent_dim]
+                if nl.dim() == 2:  # [batch_size, latent_dim]
+                    nl = nl.unsqueeze(0)  # [1, batch_size, latent_dim]
+                next_latents_list.append(nl.detach())
+            else:
+                # Create zero tensor if not a tensor
+                next_latents_list.append(torch.zeros(1, 1, self.belief_dim, device=self.device))
         
-        next_signals_list = [ns.detach() for ns in next_signals]
+        next_signals_list = []
+        for ns in next_signals:
+            if isinstance(ns, torch.Tensor):
+                next_signals_list.append(ns.detach())
+            elif isinstance(ns, (int, float)):
+                next_signals_list.append(torch.tensor([ns], dtype=torch.float32))
+            else:
+                next_signals_list.append(ns)
         
-        # Handle means and logvars which might be None for older entries
+        # Handle means and logvars which might be None or float for older entries
         means_list = []
         logvars_list = []
         for m, lv in zip(means, logvars):
             if m is not None and lv is not None:
-                means_list.append(m.detach())
-                logvars_list.append(lv.detach())
+                if isinstance(m, torch.Tensor) and isinstance(lv, torch.Tensor):
+                    means_list.append(m.detach())
+                    logvars_list.append(lv.detach())
+                elif isinstance(m, (int, float)) and isinstance(lv, (int, float)):
+                    means_list.append(torch.tensor([m], dtype=torch.float32))
+                    logvars_list.append(torch.tensor([lv], dtype=torch.float32))
         
-        # Stack tensors with consistent shapes
-        signals = torch.stack(signals_list).to(self.device)
-        neighbor_actions = torch.stack(neighbor_actions_list).to(self.device)
-        beliefs = torch.cat([b.view(1, 1, -1) for b in beliefs_list], dim=1).to(self.device)  # Ensure consistent shape
-        latents = torch.cat([l.view(1, 1, -1) for l in latents_list], dim=1).to(self.device)  # Ensure consistent shape
-        actions = torch.LongTensor(actions).to(self.device)
-        rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
-        next_signals = torch.stack(next_signals_list).to(self.device)
-        next_beliefs = torch.cat([nb.view(1, 1, -1) for nb in next_beliefs_list], dim=1).to(self.device)  # Ensure consistent shape
-        next_latents = torch.cat([nl.view(1, 1, -1) for nl in next_latents_list], dim=1).to(self.device)  # Ensure consistent shape
-        
-        # Only create means and logvars tensors if we have data
-        means = torch.cat(means_list).to(self.device) if means_list else None
-        logvars = torch.cat(logvars_list).to(self.device) if logvars_list else None
-        
-        return (signals, neighbor_actions, beliefs, latents, actions, rewards,
-                next_signals, next_beliefs, next_latents, means, logvars)
+        try:
+            # Stack tensors with consistent shapes
+            signals = torch.stack(signals_list).to(self.device)
+            neighbor_actions = torch.stack(neighbor_actions_list).to(self.device)
+            beliefs = torch.cat([b.view(1, 1, -1) for b in beliefs_list], dim=1).to(self.device)  # Ensure consistent shape
+            latents = torch.cat([l.view(1, 1, -1) for l in latents_list], dim=1).to(self.device)  # Ensure consistent shape
+            
+            # Convert actions to tensor if they're not already
+            actions_tensor = []
+            for a in actions:
+                if isinstance(a, torch.Tensor):
+                    actions_tensor.append(a.item())
+                else:
+                    actions_tensor.append(int(a))
+            actions = torch.LongTensor(actions_tensor).to(self.device)
+            
+            # Convert rewards to tensor
+            rewards_tensor = []
+            for r in rewards:
+                if isinstance(r, torch.Tensor):
+                    rewards_tensor.append(r.item())
+                else:
+                    rewards_tensor.append(float(r))
+            rewards = torch.FloatTensor(rewards_tensor).unsqueeze(1).to(self.device)
+            
+            next_signals = torch.stack(next_signals_list).to(self.device)
+            next_beliefs = torch.cat([nb.view(1, 1, -1) for nb in next_beliefs_list], dim=1).to(self.device)  # Ensure consistent shape
+            next_latents = torch.cat([nl.view(1, 1, -1) for nl in next_latents_list], dim=1).to(self.device)  # Ensure consistent shape
+            
+            # Only create means and logvars tensors if we have data
+            means = torch.cat(means_list).to(self.device) if means_list else None
+            logvars = torch.cat(logvars_list).to(self.device) if logvars_list else None
+            
+            return (signals, neighbor_actions, beliefs, latents, actions, rewards,
+                    next_signals, next_beliefs, next_latents, means, logvars)
+        except Exception as e:
+            print(f"Error processing transitions: {e}")
+            return None
     
     def _process_sequence_batch(self, sequences):
         """Process a batch of sequences for GRU training."""

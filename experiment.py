@@ -33,6 +33,9 @@ def main():
         args.eval_only = False
         args.save_model = True
         args.use_gnn = True
+        args.use_ewc = True
+        args.ewc_importance = 100000.0
+        args.ewc_online = True
         run_experiment(args)
 
         # Evaluate

@@ -208,6 +208,22 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
 def update_agent_states(agents, observations, next_observations, actions, rewards, 
                         replay_buffers, metrics, env, args, training, step):
     """Update agent states and store transitions in replay buffer."""
+    # Check if we have a new true state for EWC
+    if training and hasattr(args, 'use_ewc') and args.use_ewc:
+        current_true_state = env.true_state
+        
+        # Check if this is a new true state for any agent
+        for agent_id, agent in agents.items():
+            if hasattr(agent, 'use_ewc') and agent.use_ewc and hasattr(agent, 'seen_true_states'):
+                if current_true_state not in agent.seen_true_states and len(agent.seen_true_states) > 0:
+                    # We have a new true state, calculate Fisher matrices
+                    if agent_id in replay_buffers and len(replay_buffers[agent_id]) > 64:
+                        print(f"New true state {current_true_state} detected. Calculating Fisher matrices for agent {agent_id}...")
+                        agent.calculate_fisher_matrices(replay_buffers[agent_id])
+                
+                # Add current true state to the set of seen states
+                agent.seen_true_states.add(current_true_state)
+    
     for agent_id, agent in agents.items():
         # Get current and next observations
         obs_data = observations[agent_id]
@@ -324,7 +340,10 @@ def initialize_agents(env, args, obs_dim):
             device=args.device,
             buffer_capacity=args.buffer_capacity,
             max_trajectory_length=args.horizon,
-            use_gnn=args.use_gnn
+            use_gnn=args.use_gnn,
+            use_ewc=args.use_ewc if hasattr(args, 'use_ewc') else False,
+            ewc_importance=args.ewc_importance if hasattr(args, 'ewc_importance') else 1000.0,
+            ewc_online=args.ewc_online if hasattr(args, 'ewc_online') else False
         )
         
         # If using GNN, update the inference module with the specified parameters
