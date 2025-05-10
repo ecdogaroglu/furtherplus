@@ -28,19 +28,19 @@ def main():
     if args.train_then_evaluate:
 
         # Train
-        args.num_episodes = 4
+        args.num_episodes = 6
         args.horizon = 1000
         args.eval_only = False
         args.save_model = True
         args.use_gnn = True
         args.use_ewc = True
-        args.ewc_importance = 100000.0
+        args.ewc_importance = 100.0
         args.ewc_online = True
         run_experiment(args)
 
         # Evaluate
-        args.num_episodes = 4
-        args.horizon = 1000
+        args.num_episodes = 10
+        args.horizon = 100
         args.eval_only = True
         args.load_model = 'auto'
         run_experiment(args)

@@ -173,7 +173,7 @@ def calculate_fisher_from_replay_buffer(
     replay_buffer,
     loss_fn: callable,
     device: torch.device,
-    batch_size: int = 64,
+    batch_size: int = 1000,
     num_batches: int = 20  # Increased from 10 to 20 for better estimation
 ) -> Dict[str, torch.Tensor]:
     """
@@ -223,14 +223,9 @@ def calculate_fisher_from_replay_buffer(
             
             # Calculate loss
             loss = loss_fn(model, batch)
-            
-            # Skip if loss is not a tensor or doesn't require grad
-            if not isinstance(loss, torch.Tensor) or not loss.requires_grad:
-                continue
                 
             # Backward pass
             loss.backward()
-            
             # Check if gradients are valid (not NaN or Inf)
             valid_grads = True
             for name, param in model.named_parameters():
@@ -238,7 +233,6 @@ def calculate_fisher_from_replay_buffer(
                     if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
                         valid_grads = False
                         break
-            
             if not valid_grads:
                 print("Skipping batch with NaN or Inf gradients")
                 continue
@@ -248,9 +242,8 @@ def calculate_fisher_from_replay_buffer(
                 if param.requires_grad and param.grad is not None:
                     # Use absolute values to ensure positive Fisher values
                     fisher_matrices[name] += param.grad.pow(2).abs().data
-            
             valid_batches += 1
-            if valid_batches % 5 == 0:
+            if valid_batches % 10 == 0:
                 print(f"Processed {valid_batches}/{num_batches} valid batches for Fisher calculation")
                 
         except Exception as e:

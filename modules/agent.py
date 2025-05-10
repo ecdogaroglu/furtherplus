@@ -909,7 +909,8 @@ class POLARISAgent:
         Args:
             replay_buffer: The replay buffer containing transitions
         """
-        if not self.use_ewc or replay_buffer is None or len(replay_buffer) < 64:
+        if replay_buffer is None:
+            print(f"Agent {self.agent_id}: No replay buffer provided. Skipping Fisher matrices calculation.")
             return
         
         # Define loss functions for Fisher calculation
@@ -927,6 +928,8 @@ class POLARISAgent:
             
             # Calculate loss
             loss = F.binary_cross_entropy(belief_distributions, next_signals, reduction='mean')
+            loss.requires_grad_(True)
+            
             return loss
         
         def policy_loss_fn(model, batch):
@@ -942,6 +945,7 @@ class POLARISAgent:
             
             # Calculate loss
             loss = F.cross_entropy(action_logits, actions)
+            loss.requires_grad_(True)
             return loss
         
         # Calculate Fisher matrices

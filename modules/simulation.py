@@ -193,10 +193,26 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
         update_progress_display(steps_iterator, info, total_rewards, step, training)
         
         # Save models periodically if training
-        if training and args.save_model and (step + 1) % max(1, args.horizon // 5) == 0:
-            save_checkpoint_models(agents, output_dir, step)
+        #if training and args.save_model and (step + 1) % max(1, args.horizon // 5) == 0:
+        #    save_checkpoint_models(agents, output_dir, step)
         
         if done:
+            # Check if we have a new true state for EWC
+            if training and hasattr(args, 'use_ewc') and args.use_ewc:
+                current_true_state = env.true_state
+                print(f"Current true state: {current_true_state}")
+                # Check if this is a new true state for any agent
+                for agent_id, agent in agents.items():
+                    if hasattr(agent, 'use_ewc') and agent.use_ewc and hasattr(agent, 'seen_true_states'):
+                        if current_true_state not in agent.seen_true_states:
+                            # We have a new true state, calculate Fisher matrices
+                            if agent_id in replay_buffers:
+                                print(f"New true state {current_true_state} detected. Calculating Fisher matrices for agent {agent_id}...")
+                                agent.calculate_fisher_matrices(replay_buffers[agent_id])
+                        
+                        # Add current true state to the set of seen states
+                        agent.seen_true_states.add(current_true_state)
+
             break
     
     # Display completion time
@@ -208,21 +224,6 @@ def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, train
 def update_agent_states(agents, observations, next_observations, actions, rewards, 
                         replay_buffers, metrics, env, args, training, step):
     """Update agent states and store transitions in replay buffer."""
-    # Check if we have a new true state for EWC
-    if training and hasattr(args, 'use_ewc') and args.use_ewc:
-        current_true_state = env.true_state
-        
-        # Check if this is a new true state for any agent
-        for agent_id, agent in agents.items():
-            if hasattr(agent, 'use_ewc') and agent.use_ewc and hasattr(agent, 'seen_true_states'):
-                if current_true_state not in agent.seen_true_states and len(agent.seen_true_states) > 0:
-                    # We have a new true state, calculate Fisher matrices
-                    if agent_id in replay_buffers and len(replay_buffers[agent_id]) > 64:
-                        print(f"New true state {current_true_state} detected. Calculating Fisher matrices for agent {agent_id}...")
-                        agent.calculate_fisher_matrices(replay_buffers[agent_id])
-                
-                # Add current true state to the set of seen states
-                agent.seen_true_states.add(current_true_state)
     
     for agent_id, agent in agents.items():
         # Get current and next observations
