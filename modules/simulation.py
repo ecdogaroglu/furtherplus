@@ -140,86 +140,18 @@ def run_agents(env, args, training=True, model_path=None):
 def run_simulation(env, agents, replay_buffers, metrics, args, output_dir, training):
     """Run the main simulation loop."""
     mode_str = "training" if training else "evaluation"
-    
     print(f"Starting {mode_str} for {args.horizon} steps...")
+    
     start_time = time.time()
     
-    # Initialize environment and agents
-    observations = env.initialize()
-    total_rewards = np.zeros(env.num_agents) if training else None
+    observations = {}
+    previous_losses = {agent_id: 0 for agent_id in agents}
+    current_losses = {agent_id: 0 for agent_id in agents}
     
-    # Print the true state
-    print(f"True state for this episode: {env.true_state}")
-        
-    # Set global metrics for access in other functions
-    set_metrics(metrics)
-    
-    # Reset and initialize agent internal states
-    reset_agent_internal_states(agents)
-    
-    # Set agents to appropriate mode
-    for agent_id, agent in agents.items():
-        if training:
-            agent.set_train_mode()
-        else:
-            agent.set_eval_mode()
-    
-    # Main simulation loop
-    steps_iterator = tqdm(range(args.horizon), desc="Training" if training else "Evaluating")
-    for step in steps_iterator:
-        # Get agent actions
-        actions, action_probs = select_agent_actions(agents, metrics)
-        
-        # Take environment step
-        next_observations, rewards, done, info = env.step(actions, action_probs)
-        
-        # Update rewards if training
-        if training and rewards:
-            update_total_rewards(total_rewards, rewards)
-        
-        # Update agent states and store transitions
-        update_agent_states(
-            agents, observations, next_observations, actions, rewards, 
-            replay_buffers, metrics, env, args, training, step
-        )
-        
-        # Update observations for next step
-        observations = next_observations
-        
-        # Store and process metrics
-        update_metrics(metrics, info, env, actions, action_probs, step, training)
-        
-        # Update progress display
-        update_progress_display(steps_iterator, info, total_rewards, step, training)
-        
-        # Save models periodically if training
-        #if training and args.save_model and (step + 1) % max(1, args.horizon // 5) == 0:
-        #    save_checkpoint_models(agents, output_dir, step)
-        
-        if done:
-            # Check if we have a new true state for EWC
-            if training and hasattr(args, 'use_ewc') and args.use_ewc:
-                current_true_state = env.true_state
-                print(f"Current true state: {current_true_state}")
-                # Check if this is a new true state for any agent
-                for agent_id, agent in agents.items():
-                    if hasattr(agent, 'use_ewc') and agent.use_ewc and hasattr(agent, 'seen_true_states'):
-                        if current_true_state not in agent.seen_true_states:
-                            # We have a new true state, calculate Fisher matrices
-                            if agent_id in replay_buffers:
-                                print(f"New true state {current_true_state} detected. Calculating Fisher matrices for agent {agent_id}...")
-                                agent.calculate_fisher_matrices(replay_buffers[agent_id])
-                        
-                        # Add current true state to the set of seen states
-                        agent.seen_true_states.add(current_true_state)
-
-            break
-    
-    # Display completion time
-    total_time = time.time() - start_time
-    print(f"{mode_str.capitalize()} completed in {total_time:.2f} seconds")
-    
-    return observations, metrics
+    for step in range(args.horizon):
+        # Get actions from all agents
+        actions = {}
+        # ... existing code ...
 
 def update_agent_states(agents, observations, next_observations, actions, rewards, 
                         replay_buffers, metrics, env, args, training, step):
@@ -310,7 +242,18 @@ def update_agent_states(agents, observations, next_observations, actions, reward
                 # Sample a batch from the replay buffer
                 batch = replay_buffers[agent_id].sample(args.batch_size)
                 # Update network parameters
-                agent.update(batch)
+                policy_loss, transformer_loss = agent.update(batch)
+                
+                # If using EWC, dynamically adjust importance based on losses
+                if hasattr(agent, 'use_ewc') and agent.use_ewc and hasattr(agent, 'adjust_ewc_importance'):
+                    # Track the combined loss for EWC adjustment
+                    current_loss = policy_loss + transformer_loss
+                    # Get the previous loss value
+                    prev_loss = getattr(agent, 'previous_loss', current_loss)
+                    # Adjust EWC importance based on loss changes
+                    agent.adjust_ewc_importance(current_loss, prev_loss, env.true_state)
+                    # Store current loss for next comparison
+                    agent.previous_loss = current_loss
 
 def initialize_agents(env, args, obs_dim):
     """Initialize POLARIS agents."""

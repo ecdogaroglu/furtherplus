@@ -49,7 +49,7 @@ def parse_args():
     # EWC parameters
     parser.add_argument('--use-ewc', action='store_true',
                         help='Use Elastic Weight Consolidation to prevent catastrophic forgetting')
-    parser.add_argument('--ewc-importance', type=float, default=100.0,
+    parser.add_argument('--ewc-importance', type=float, default=50.0,
                         help='Importance factor for EWC penalty (lambda)')
     parser.add_argument('--ewc-online', action='store_true',
                         help='Use online EWC instead of standard EWC')

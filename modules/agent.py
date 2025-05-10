@@ -220,9 +220,9 @@ class POLARISAgent:
         self.ewc_online = ewc_online
         
         if self.use_ewc:
-            # Use a much higher importance factor for better protection against forgetting
-            # The default value might be too low for this specific task
-            actual_importance = ewc_importance * 10.0  # Increase by 10x
+            # Start with a moderate importance factor that can be adjusted dynamically
+            # based on performance on different tasks
+            actual_importance = ewc_importance
             
             # Initialize EWC for belief processor and policy networks
             self.belief_ewc = EWCLoss(
@@ -245,6 +245,10 @@ class POLARISAgent:
             
             # Add counter for debugging
             self.ewc_debug_counter = 0
+            
+            # Store initial model parameters as reference
+            self.initial_belief_params = {name: param.data.clone() for name, param in self.belief_processor.named_parameters() if param.requires_grad}
+            self.initial_policy_params = {name: param.data.clone() for name, param in self.policy.named_parameters() if param.requires_grad}
     
     def observe(self, signal, neighbor_actions):
         """Update belief state based on new observation."""
@@ -626,6 +630,16 @@ class POLARISAgent:
         if self.discount_factor == 0:
             self.gain_optimizer.step()
         
+        # Add EWC loss if enabled
+        ewc_loss = 0.0
+        if self.use_ewc and self.fisher_calculated:
+            ewc_loss = self.policy_ewc.calculate_loss()
+            policy_loss += ewc_loss
+            if hasattr(self, 'ewc_debug_counter'):
+                self.ewc_debug_counter += 1
+                if self.ewc_debug_counter % 100 == 0:
+                    print(f"Agent {self.agent_id} Policy EWC Loss: {ewc_loss.item():.6f}, Main Loss: {policy_loss.item():.6f}")
+        
         return q_loss.item()
     
     def _update_policy(self, beliefs, latents, actions, neighbor_actions):
@@ -655,16 +669,6 @@ class POLARISAgent:
         
         # Policy loss is negative of expected Q-value plus entropy
         policy_loss = -(expected_q + self.entropy_weight * entropy).mean()
-        
-        # Add EWC loss if enabled
-        ewc_loss = 0.0
-        if self.use_ewc and self.fisher_calculated:
-            ewc_loss = self.policy_ewc.calculate_loss()
-            policy_loss += ewc_loss
-            if hasattr(self, 'ewc_debug_counter'):
-                self.ewc_debug_counter += 1
-                if self.ewc_debug_counter % 100 == 0:
-                    print(f"Agent {self.agent_id} Policy EWC Loss: {ewc_loss.item():.6f}, Main Loss: {policy_loss.item():.6f}")
         
         # Calculate advantage for Transformer training
         # Advantage is Q-value of taken action minus expected Q-value (baseline)
@@ -980,4 +984,55 @@ class POLARISAgent:
         The internal state is maintained across what would have been episode boundaries.
         """
         pass
+    
+    def adjust_ewc_importance(self, current_loss, prev_loss, true_state):
+        """
+        Dynamically adjust EWC importance based on loss changes.
+        
+        Args:
+            current_loss: Current training loss
+            prev_loss: Previous training loss
+            true_state: Current environment true state
+        """
+        if not self.use_ewc or not hasattr(self, 'belief_ewc') or not hasattr(self, 'policy_ewc'):
+            return
+            
+        # Only adjust if we've seen multiple states
+        if len(self.seen_true_states) < 2:
+            return
+            
+        # Calculate loss change ratio
+        if prev_loss > 0:
+            loss_ratio = current_loss / prev_loss
+        else:
+            loss_ratio = 1.0
+            
+        # Adjust importance based on loss trend
+        if loss_ratio > 1.5:  # Loss increasing too much
+            # Reduce EWC importance to allow more adaptation
+            adjustment_factor = 0.8
+            print(f"Agent {self.agent_id}: High loss increase detected. Reducing EWC importance.")
+        elif loss_ratio < 0.5:  # Loss decreasing too quickly
+            # Increase EWC importance to prevent forgetting
+            adjustment_factor = 1.2
+            print(f"Agent {self.agent_id}: Quick loss decrease detected. Increasing EWC importance.")
+        else:
+            # Keep importance stable
+            adjustment_factor = 1.0
+            
+        # Apply adjustment
+        new_importance = self.ewc_importance * adjustment_factor
+        # Clamp to reasonable range
+        new_importance = max(10.0, min(new_importance, 5000.0))
+        
+        # Only change if significant adjustment
+        if abs(new_importance - self.ewc_importance) > 5.0:
+            self.ewc_importance = new_importance
+            self.belief_ewc.importance = new_importance
+            self.policy_ewc.importance = new_importance
+            print(f"Agent {self.agent_id}: Adjusted EWC importance to {new_importance:.2f}")
+            
+        # Track state-specific performance for more advanced adaptation
+        if not hasattr(self, 'state_performances'):
+            self.state_performances = {}
     

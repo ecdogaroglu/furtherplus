@@ -103,16 +103,23 @@ class EWCLoss:
                 # Get the old parameter values
                 old_param = self.params[name]
                 
-                # Calculate the squared difference weighted by Fisher information
-                # Use L1 regularization for more stability
-                param_diff = (param - old_param).abs()
+                # Calculate both L1 and L2 penalties for more balanced regularization
+                param_diff = param - old_param
                 
-                # Combine L1 and L2 regularization for better stability
-                l2_penalty = (fisher * (param - old_param).pow(2)).sum()
-                l1_penalty = (fisher.sqrt() * param_diff).sum()
+                # L2 regularization (standard EWC)
+                l2_penalty = (fisher * param_diff.pow(2)).sum()
                 
-                # Add both penalties with more weight on L2
-                loss += l2_penalty + 0.1 * l1_penalty
+                # L1 regularization for sparse updates
+                l1_penalty = (fisher.sqrt() * param_diff.abs()).sum() 
+                
+                # Adaptive weighting between L1 and L2 based on task count
+                # More L2 for early tasks, more L1 for later tasks
+                l2_weight = max(0.8 - 0.05 * (self.task_count - 1), 0.5)  # Starts at 0.8, decreases to min 0.5
+                l1_weight = 1.0 - l2_weight  # Increases over time
+                
+                # Weighted combination of penalties
+                combined_penalty = l2_weight * l2_penalty + l1_weight * l1_penalty
+                loss += combined_penalty
         
         # Apply importance factor
         loss *= self.importance / 2.0
