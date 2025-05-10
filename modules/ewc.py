@@ -104,7 +104,15 @@ class EWCLoss:
                 old_param = self.params[name]
                 
                 # Calculate the squared difference weighted by Fisher information
-                loss += (fisher * (param - old_param).pow(2)).sum()
+                # Use L1 regularization for more stability
+                param_diff = (param - old_param).abs()
+                
+                # Combine L1 and L2 regularization for better stability
+                l2_penalty = (fisher * (param - old_param).pow(2)).sum()
+                l1_penalty = (fisher.sqrt() * param_diff).sum()
+                
+                # Add both penalties with more weight on L2
+                loss += l2_penalty + 0.1 * l1_penalty
         
         # Apply importance factor
         loss *= self.importance / 2.0
@@ -166,7 +174,7 @@ def calculate_fisher_from_replay_buffer(
     loss_fn: callable,
     device: torch.device,
     batch_size: int = 64,
-    num_batches: int = 10
+    num_batches: int = 20  # Increased from 10 to 20 for better estimation
 ) -> Dict[str, torch.Tensor]:
     """
     Calculate the Fisher information matrix using samples from a replay buffer.
@@ -193,7 +201,12 @@ def calculate_fisher_from_replay_buffer(
     
     # Process multiple batches
     valid_batches = 0
-    for _ in range(num_batches):
+    max_attempts = num_batches * 2  # Allow more attempts to get valid batches
+    attempts = 0
+    
+    while valid_batches < num_batches and attempts < max_attempts:
+        attempts += 1
+        
         # Sample batch from replay buffer
         batch = replay_buffer.sample(batch_size)
         if batch is None:
@@ -218,19 +231,48 @@ def calculate_fisher_from_replay_buffer(
             # Backward pass
             loss.backward()
             
+            # Check if gradients are valid (not NaN or Inf)
+            valid_grads = True
+            for name, param in model.named_parameters():
+                if param.requires_grad and param.grad is not None:
+                    if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                        valid_grads = False
+                        break
+            
+            if not valid_grads:
+                print("Skipping batch with NaN or Inf gradients")
+                continue
+                
             # Accumulate squared gradients (Fisher information)
             for name, param in model.named_parameters():
                 if param.requires_grad and param.grad is not None:
-                    fisher_matrices[name] += param.grad.pow(2).data
+                    # Use absolute values to ensure positive Fisher values
+                    fisher_matrices[name] += param.grad.pow(2).abs().data
             
             valid_batches += 1
+            if valid_batches % 5 == 0:
+                print(f"Processed {valid_batches}/{num_batches} valid batches for Fisher calculation")
+                
         except Exception as e:
             print(f"Error calculating Fisher matrix for batch: {e}")
             continue
     
     # Normalize by the number of valid batches
     if valid_batches > 0:
+        print(f"Normalizing Fisher matrices using {valid_batches} valid batches")
         for name in fisher_matrices:
             fisher_matrices[name] /= valid_batches
+            
+            # Add a small constant to avoid zeros in the Fisher matrix
+            fisher_matrices[name] += 1e-8
+    else:
+        print("Warning: No valid batches for Fisher calculation!")
+    
+    # Check if Fisher matrices contain valid values
+    for name, matrix in fisher_matrices.items():
+        if torch.isnan(matrix).any() or torch.isinf(matrix).any():
+            print(f"Warning: Fisher matrix for {name} contains NaN or Inf values!")
+            # Replace with small constant
+            fisher_matrices[name] = torch.ones_like(matrix) * 1e-8
     
     return fisher_matrices

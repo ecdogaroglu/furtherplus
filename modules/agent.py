@@ -220,17 +220,21 @@ class POLARISAgent:
         self.ewc_online = ewc_online
         
         if self.use_ewc:
+            # Use a much higher importance factor for better protection against forgetting
+            # The default value might be too low for this specific task
+            actual_importance = ewc_importance * 10.0  # Increase by 10x
+            
             # Initialize EWC for belief processor and policy networks
             self.belief_ewc = EWCLoss(
                 model=self.belief_processor,
-                importance=ewc_importance,
+                importance=actual_importance,
                 online=ewc_online,
                 device=device
             )
             
             self.policy_ewc = EWCLoss(
                 model=self.policy,
-                importance=ewc_importance,
+                importance=actual_importance,
                 online=ewc_online,
                 device=device
             )
@@ -238,6 +242,9 @@ class POLARISAgent:
             # Track previously seen true states
             self.seen_true_states = set()
             self.fisher_calculated = False
+            
+            # Add counter for debugging
+            self.ewc_debug_counter = 0
     
     def observe(self, signal, neighbor_actions):
         """Update belief state based on new observation."""
@@ -650,9 +657,14 @@ class POLARISAgent:
         policy_loss = -(expected_q + self.entropy_weight * entropy).mean()
         
         # Add EWC loss if enabled
+        ewc_loss = 0.0
         if self.use_ewc and self.fisher_calculated:
             ewc_loss = self.policy_ewc.calculate_loss()
             policy_loss += ewc_loss
+            if hasattr(self, 'ewc_debug_counter'):
+                self.ewc_debug_counter += 1
+                if self.ewc_debug_counter % 100 == 0:
+                    print(f"Agent {self.agent_id} Policy EWC Loss: {ewc_loss.item():.6f}, Main Loss: {policy_loss.item():.6f}")
         
         # Calculate advantage for Transformer training
         # Advantage is Q-value of taken action minus expected Q-value (baseline)
@@ -700,6 +712,9 @@ class POLARISAgent:
         if self.use_ewc and self.fisher_calculated:
             ewc_loss = self.belief_ewc.calculate_loss()
             transformer_loss += ewc_loss
+            if hasattr(self, 'ewc_debug_counter'):
+                if self.ewc_debug_counter % 100 == 0:
+                    print(f"Agent {self.agent_id} Belief EWC Loss: {ewc_loss.item():.6f}, Main Loss: {transformer_loss.item():.6f}")
                 
         # Update Transformer parameters
         self.transformer_optimizer.zero_grad()
